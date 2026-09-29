@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pair a phone · Remote Web Control</title>
+  <link rel="icon" type="image/png" href="icons/favicon-32.png">
+  <link rel="stylesheet" href="app.css">
+  <style>
+    main { max-width: 860px; }
+    .pair-grid { display: grid; grid-template-columns: minmax(240px, 320px) 1fr; gap: 16px; align-items: start; }
+    @media (max-width: 640px) { .pair-grid { grid-template-columns: 1fr; } }
+    .qr { background: #fff; border-radius: var(--radius); padding: 12px; }
+    .qr img { display: block; width: 100%; height: auto; image-rendering: pixelated; }
+    .pin { font-size: 44px; font-weight: 700; letter-spacing: 8px; font-variant-numeric: tabular-nums; }
+    ol { padding-left: 20px; margin: 0; }
+    ol li + li { margin-top: 6px; }
+    code { background: var(--bg); padding: 2px 6px; border-radius: 6px; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <header class="topbar"><h1 data-i18n="pairpage.heading">Pair a phone with Remote Web Control</h1></header>
+  <main class="stack">
+    <div class="pair-grid">
+      <div class="qr"><img id="qr" data-i18n-attr="alt:pairpage.qr_alt" alt="QR code with the app address"></div>
+      <div class="card stack">
+        <div>
+          <div class="muted small">PIN</div>
+          <div class="pin" id="pin">······</div>
+          <div class="muted small" id="expires"></div>
+        </div>
+        <div>
+          <div class="muted small" data-i18n="pairpage.app_address">App address</div>
+          <code id="url"></code>
+        </div>
+        <button id="renew" class="primary" data-i18n="pairpage.renew">Generate a new PIN</button>
+      </div>
+    </div>
+    <div class="card stack">
+      <h2 data-i18n="pairpage.how">How to pair</h2>
+      <ol>
+        <li data-i18n="pairpage.step_wifi">The phone must be on the same Wi-Fi network as this PC.</li>
+        <li data-i18n="pairpage.step_scan">Scan the QR code with the camera: the app opens in the browser, already paired.</li>
+        <li><b data-i18n="pairpage.iphone">iPhone:</b> <span data-i18n="pairpage.step_iphone"></span></li>
+        <li><b data-i18n="pairpage.android">Android:</b> <span data-i18n="pairpage.step_android"></span></li>
+      </ol>
+      <p class="muted small" data-i18n="pairpage.expiry_note"></p>
+    </div>
+    <details class="card">
+      <summary data-i18n="pairpage.show_token">Show the API token</summary>
+      <p class="small" data-i18n="pairpage.token_note"></p>
+      <code id="token"></code>
+    </details>
+    <form class="card stack hidden" id="token-form">
+      <h2 data-i18n="pairpage.remote_heading">This page is not open on Cura's PC</h2>
+      <p class="small" data-i18n="pairpage.remote_note"></p>
+      <input id="token-input" autocomplete="off" spellcheck="false" data-i18n-attr="placeholder:pairpage.token_input" placeholder="API token">
+      <button class="primary" type="submit" data-i18n="pairpage.continue">Continue</button>
+    </form>
+    <p class="small" id="error" style="color: var(--error)"></p>
+  </main>
+  <script src="vendor/qrcode.js"></script>
+  <script type="module" src="js/pair-page.js"></script>
+</body>
+</html>

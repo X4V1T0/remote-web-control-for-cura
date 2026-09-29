@@ -1,0 +1,16 @@
+{
+  "name": "Remote Web Control for Cura",
+  "short_name": "Web Control",
+  "description": "Slice STL files with Cura from your phone",
+  "lang": "en",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#181c24",
+  "theme_color": "#181c24",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

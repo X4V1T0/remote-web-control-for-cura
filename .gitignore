@@ -1,0 +1,11 @@
+# Your local configuration and data: never commit them (they contain your API token).
+.env
+cura-data/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Tools
+.playwright-mcp/
