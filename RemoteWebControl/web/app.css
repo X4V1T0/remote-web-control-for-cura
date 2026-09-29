@@ -1,0 +1,277 @@
+:root {
+  --bg: #181c24;
+  --panel: #222835;
+  --panel-2: #2b3242;
+  --line: #394155;
+  --text: #ebeef3;
+  --muted: #9aa3b5;
+  --accent: #ff8a26;
+  --accent-text: #1b1206;
+  --ok: #3fbf6f;
+  --warn: #f2c14e;
+  --error: #ff5d5d;
+  --radius: 14px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body { min-height: 100vh; min-height: 100dvh; }
+
+/* ------------------------------------------------------------------ layout */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: calc(var(--safe-top) + 8px) 12px 8px;
+  background: rgba(24, 28, 36, 0.94);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.topbar-spacer { flex: 1; }
+
+main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 12px 12px calc(var(--safe-bottom) + 24px);
+}
+
+.stack > * + * { margin-top: 12px; }
+
+.row { display: flex; align-items: center; gap: 8px; }
+.row.wrap { flex-wrap: wrap; }
+.grow { flex: 1; min-width: 0; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px;
+}
+
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.center { text-align: center; }
+.hidden { display: none !important; }
+
+h2 { font-size: 17px; margin: 0 0 8px; }
+
+/* ------------------------------------------------------------------ controls */
+
+button, .button {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  border-radius: 12px;
+  padding: 12px 16px;
+  min-height: 46px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+button:disabled { opacity: 0.45; cursor: default; }
+button.primary, .button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+button.danger { color: var(--error); }
+button.block { width: 100%; }
+button.small { min-height: 36px; padding: 6px 10px; font-size: 14px; }
+
+.icon-button {
+  min-height: 40px;
+  min-width: 40px;
+  padding: 0 8px;
+  font-size: 28px;
+  line-height: 1;
+  background: transparent;
+  border: none;
+}
+
+input, select, textarea {
+  font: inherit;
+  font-size: 16px; /* Avoids the iOS zoom on focus. */
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  min-height: 44px;
+  width: 100%;
+}
+
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+
+label.field { display: block; }
+label.field > span { display: block; margin-bottom: 6px; color: var(--muted); font-size: 14px; }
+
+.pin-input {
+  font-size: 32px;
+  letter-spacing: 10px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Switch built on a checkbox. */
+.switch { position: relative; display: inline-block; vertical-align: middle; width: 52px; height: 32px; flex: none; }
+.switch input { opacity: 0; width: 100%; height: 100%; margin: 0; position: absolute; z-index: 1; cursor: pointer; }
+.switch span {
+  position: absolute; inset: 0; border-radius: 16px; background: var(--line); transition: background 0.15s;
+}
+.switch span::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 26px; height: 26px; border-radius: 50%;
+  background: var(--text); transition: transform 0.15s;
+}
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span::after { transform: translateX(20px); }
+
+/* ------------------------------------------------------------------ jobs */
+
+.job-item { display: block; color: inherit; text-decoration: none; }
+.job-item .name { font-weight: 600; overflow-wrap: anywhere; }
+
+.badge {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+.badge.ok { color: var(--ok); border-color: var(--ok); }
+.badge.busy { color: var(--accent); border-color: var(--accent); }
+.badge.error { color: var(--error); border-color: var(--error); }
+
+.progress { height: 8px; border-radius: 4px; background: var(--bg); overflow: hidden; }
+.progress > div { height: 100%; background: var(--accent); width: 0; transition: width 0.3s; }
+
+.fab {
+  position: fixed;
+  right: 16px;
+  bottom: calc(var(--safe-bottom) + 16px);
+  z-index: 5;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+/* ------------------------------------------------------------------ job page */
+
+.tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 4px;
+}
+.tabs button { min-height: 40px; border: none; background: transparent; color: var(--muted); }
+.tabs button.active { background: var(--panel-2); color: var(--text); }
+
+.viewer {
+  position: relative;
+  height: 52vh;
+  min-height: 280px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: #11141a;
+  border: 1px solid var(--line);
+  touch-action: none;
+}
+.viewer canvas { display: block; width: 100%; height: 100%; }
+.viewer .overlay {
+  position: absolute; left: 10px; top: 10px; right: 10px;
+  display: flex; gap: 6px; flex-wrap: wrap; pointer-events: none;
+}
+
+.rotate-grid { display: grid; grid-template-columns: auto 1fr 1fr; gap: 6px; align-items: center; }
+.rotate-grid .axis { font-weight: 700; width: 26px; text-align: center; }
+.axis.x { color: #ff5d5d; }
+.axis.y { color: #3fbf6f; }
+.axis.z { color: #4ea1ff; }
+
+.fit { font-weight: 600; }
+.fit.ok { color: var(--ok); }
+.fit.bad { color: var(--error); }
+
+.stat { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.stat:last-child { border-bottom: none; }
+.stat b { font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------------ settings */
+
+details.category { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+details.category + details.category { margin-top: 8px; }
+details.category > summary {
+  list-style: none; padding: 14px; font-weight: 600; cursor: pointer; display: flex; justify-content: space-between;
+}
+details.category > summary::-webkit-details-marker { display: none; }
+details.category > summary::after { content: "\203A"; color: var(--muted); transform: rotate(90deg); transition: transform 0.15s; }
+details.category[open] > summary::after { transform: rotate(-90deg); }
+details.category > .settings { padding: 0 14px 8px; }
+
+.setting { padding: 10px 0; border-top: 1px solid var(--line); }
+.setting.child { margin-left: 14px; }
+.setting .label { font-weight: 500; }
+.setting .label button.info {
+  min-height: 0; padding: 0 6px; border: none; background: none; color: var(--muted); font-weight: 400;
+}
+.setting .description { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.setting .control { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
+.setting .control .unit { color: var(--muted); min-width: 28px; }
+.setting.overridden .label::before { content: "\25CF  "; color: var(--accent); }
+.setting.warning input, .setting.warning select { border-color: var(--warn); }
+.setting.error input, .setting.error select { border-color: var(--error); }
+.setting .validation { font-size: 13px; margin-top: 4px; }
+.setting.warning .validation { color: var(--warn); }
+.setting.error .validation { color: var(--error); }
+.setting.pending { opacity: 0.6; }
+
+/* ------------------------------------------------------------------ toast */
+
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--safe-bottom) + 84px);
+  transform: translateX(-50%);
+  z-index: 20;
+  max-width: calc(100% - 32px);
+  background: #0e1117;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 16px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+#toast.error { border-color: var(--error); }

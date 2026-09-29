@@ -1,0 +1,6 @@
+# Only RemoteWebControl/ and docker/ are needed to build the image.
+*
+!RemoteWebControl/
+!docker/
+**/__pycache__
+**/*.pyc

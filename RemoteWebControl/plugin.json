@@ -1,0 +1,7 @@
+{
+    "name": "Remote Web Control for Cura",
+    "author": "X4V1T0",
+    "version": "0.1.0",
+    "description": "Web app and HTTP API to upload, orient and slice STL files from your phone, with Cura's own printers, profiles and settings.",
+    "supported_sdk_versions": ["8.12.0"]
+}

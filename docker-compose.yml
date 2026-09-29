@@ -1,0 +1,28 @@
+# UltiMaker Cura + RemoteWebControl on a server. See README.md, section "Docker".
+#
+#   cp .env.example .env               # and fill it in (every value is optional)
+#   scripts/export_cura_config.sh      # once: copies your Cura configuration to ./cura-data
+#   docker compose up -d --build
+#   docker compose logs -f             # shows the API token
+
+services:
+  remote-web-control:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        CURA_VERSION: ${CURA_VERSION:-5.13.0}
+        CURA_SERIES: ${CURA_SERIES:-5.13}
+    image: remote-web-control:${CURA_VERSION:-5.13.0}
+    platform: linux/amd64
+    restart: unless-stopped
+    ports:
+      - "${RWC_PORT:-8765}:8765"          # RemoteWebControl: API and phone app
+      - "${NOVNC_PORT:-6080}:6080"        # noVNC (only active when VNC_PASSWORD is set)
+    environment:
+      VNC_PASSWORD: ${VNC_PASSWORD:-}
+      RWC_PUBLIC_URL: ${RWC_PUBLIC_URL:-}
+      CURA_KEEP_VENDORS: ${CURA_KEEP_VENDORS:-}
+    volumes:
+      - ${CURA_DATA_DIR:-./cura-data}/config:/home/cura/.config/cura
+      - ${CURA_DATA_DIR:-./cura-data}/data:/home/cura/.local/share/cura
