@@ -56,33 +56,26 @@
   --toast-bg: #191919;
   --toast-text: #ffffff;
   --shadow: rgba(0, 0, 0, 0.18);
-  /* Dark for the page itself: iOS draws its status bar gradient (full screen, added to the home
-     screen) from the root's colour scheme, and a light one shows as a white haze over the dark
-     blue header. The content below switches back to light for its native controls. */
-  color-scheme: dark;
+  color-scheme: light;
 }
-
-:root[data-theme="light"] main,
-:root[data-theme="light"] #toast { color-scheme: light; }
 
 * { box-sizing: border-box; }
 
 [hidden] { display: none !important; }
 
+/* html and body take the header's colour, and <main> paints the content's: on iOS, full screen
+   (added to the home screen), the status bar fades into the body's background, and the overscroll
+   shows it too. A light body left a white haze over the dark blue header. */
 html, body {
   margin: 0;
-  background: var(--bg);
+  background: var(--page-edge);
   color: var(--text);
   font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   -webkit-text-size-adjust: 100%;
   -webkit-tap-highlight-color: transparent;
 }
 
-/* iOS paints the status bar area and the overscroll with the page's own background: the header
-   colour there, the content colour on body. */
-html { background: var(--page-edge); }
-
-body { min-height: 100vh; min-height: 100dvh; }
+body { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
 
 /* ------------------------------------------------------------------ layout */
 
@@ -112,10 +105,13 @@ body { min-height: 100vh; min-height: 100dvh; }
 
 .topbar-spacer { flex: 1; }
 
+/* Full width and height (it paints the content's background); the content itself is centred
+   with the side padding, up to --content-width. */
 main {
-  max-width: 720px;
-  margin: 0 auto;
-  padding: 12px 12px calc(var(--safe-bottom) + 24px);
+  --content-width: 720px;
+  flex: 1;
+  background: var(--bg);
+  padding: 12px max(12px, calc((100% - var(--content-width)) / 2 + 12px)) calc(var(--safe-bottom) + 24px);
 }
 
 .stack > * + * { margin-top: 12px; }
