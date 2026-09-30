@@ -4,8 +4,22 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/OrbitControls.js";
 
-const COLOR_OK = 0xff8a26;
-const COLOR_BAD = 0xff5d5d;
+// Scene colours per theme (see theme.js). "light" is Cura's own viewport: light grey plate,
+// blue build volume outline and the yellow of Cura's generic PLA for the model.
+const PALETTES = {
+  dark: {
+    background: 0x11141a, plate: 0x2b3242, grid: 0x394155, edges: 0x6b7489,
+    disallowed: 0x7a2f35, disallowedOpacity: 0.7, marker: 0x9aa3b5, model: 0xff8a26, modelBad: 0xff5d5d,
+  },
+  light: {
+    background: 0xfafafa, plate: 0xe4e4e4, grid: 0xc0c1c2, edges: 0x3282ff,
+    disallowed: 0x000000, disallowedOpacity: 0.16, marker: 0x6c6c6c, model: 0xffc924, modelBad: 0xda1e28,
+  },
+};
+
+function currentPalette() {
+  return PALETTES[document.documentElement.dataset.theme] || PALETTES.dark;
+}
 
 // Decodes the CRM1 preview mesh (see README): magic, flags, count, float32 vertices.
 export function decodeMesh(buffer) {
@@ -32,8 +46,19 @@ export class Viewer {
     this.container = container;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "low-power" });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    this.renderer.setClearColor(0x11141a);
     container.appendChild(this.renderer.domElement);
+
+    // Shared by every part of the build volume, so a theme change only recolours them.
+    this.materials = {
+      plate: new THREE.MeshBasicMaterial(),
+      grid: new THREE.LineBasicMaterial(),
+      edges: new THREE.LineBasicMaterial(),
+      disallowed: new THREE.MeshBasicMaterial({ transparent: true }),
+      marker: new THREE.MeshBasicMaterial(),
+    };
+    this.fits = true;
+    this.onThemeChange = () => this.applyTheme();
+    window.addEventListener("rwc-themechange", this.onThemeChange);
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(40, 1, 1, 10000);
@@ -53,7 +78,21 @@ export class Viewer {
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(container);
+    this.applyTheme();
     this.resize();
+  }
+
+  applyTheme() {
+    const palette = currentPalette();
+    this.renderer.setClearColor(palette.background);
+    this.materials.plate.color.setHex(palette.plate);
+    this.materials.grid.color.setHex(palette.grid);
+    this.materials.edges.color.setHex(palette.edges);
+    this.materials.disallowed.color.setHex(palette.disallowed);
+    this.materials.disallowed.opacity = palette.disallowedOpacity;
+    this.materials.marker.color.setHex(palette.marker);
+    if (this.mesh) this.mesh.material.color.setHex(this.fits ? palette.model : palette.modelBad);
+    this.render();
   }
 
   setPrinter(printer) {
@@ -64,8 +103,7 @@ export class Viewer {
     const plateShape = new THREE.Shape();
     if (elliptic) plateShape.absellipse(0, 0, width / 2, depth / 2, 0, Math.PI * 2);
     else plateShape.moveTo(-width / 2, -depth / 2).lineTo(width / 2, -depth / 2).lineTo(width / 2, depth / 2).lineTo(-width / 2, depth / 2);
-    const plate = new THREE.Mesh(new THREE.ShapeGeometry(plateShape, 48),
-      new THREE.MeshBasicMaterial({ color: 0x2b3242 }));
+    const plate = new THREE.Mesh(new THREE.ShapeGeometry(plateShape, 48), this.materials.plate);
     plate.position.z = -0.2;
     this.volume.add(plate);
 
@@ -76,26 +114,24 @@ export class Viewer {
       for (let y = -depth / 2; y <= depth / 2 + 0.01; y += 10) points.push(-width / 2, y, 0, width / 2, y, 0);
       const grid = new THREE.BufferGeometry();
       grid.setAttribute("position", new THREE.Float32BufferAttribute(points, 3));
-      this.volume.add(new THREE.LineSegments(grid, new THREE.LineBasicMaterial({ color: 0x394155 })));
+      this.volume.add(new THREE.LineSegments(grid, this.materials.grid));
     }
 
     const box = new THREE.BoxGeometry(width, depth, height);
-    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: 0x6b7489 }));
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(box), this.materials.edges);
     edges.position.z = height / 2;
     if (!elliptic) this.volume.add(edges);
 
     for (const polygon of printer.disallowed_areas || []) {
       if (polygon.length < 3) continue;
       const shape = new THREE.Shape(polygon.map(([x, y]) => new THREE.Vector2(x, y)));
-      const area = new THREE.Mesh(new THREE.ShapeGeometry(shape),
-        new THREE.MeshBasicMaterial({ color: 0x7a2f35, transparent: true, opacity: 0.7 }));
+      const area = new THREE.Mesh(new THREE.ShapeGeometry(shape), this.materials.disallowed);
       area.position.z = 0.1;
       this.volume.add(area);
     }
 
     // Front marker: a small triangle at the front edge (printer -Y).
-    const marker = new THREE.Mesh(new THREE.CircleGeometry(4, 3),
-      new THREE.MeshBasicMaterial({ color: 0x9aa3b5 }));
+    const marker = new THREE.Mesh(new THREE.CircleGeometry(4, 3), this.materials.marker);
     marker.rotation.z = -Math.PI / 2;
     marker.position.set(0, -depth / 2 - 8, 0);
     this.volume.add(marker);
@@ -112,9 +148,11 @@ export class Viewer {
     if (this.mesh) {
       this.scene.remove(this.mesh);
       this.mesh.geometry.dispose();
+      this.mesh.material.dispose();
     }
+    this.fits = true;
     this.mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
-      color: COLOR_OK, roughness: 0.55, metalness: 0.05, side: THREE.DoubleSide,
+      color: currentPalette().model, roughness: 0.55, metalness: 0.05, side: THREE.DoubleSide,
     }));
     this.mesh.matrixAutoUpdate = false;
     this.scene.add(this.mesh);
@@ -125,7 +163,9 @@ export class Viewer {
     if (!this.mesh) return;
     this.mesh.matrix.copy(toMatrix4(matrixList));
     this.mesh.matrixWorldNeedsUpdate = true;
-    this.mesh.material.color.setHex(fits === false ? COLOR_BAD : COLOR_OK);
+    this.fits = fits !== false;
+    const palette = currentPalette();
+    this.mesh.material.color.setHex(this.fits ? palette.model : palette.modelBad);
     this.render();
   }
 
@@ -165,9 +205,14 @@ export class Viewer {
   }
 
   dispose() {
+    window.removeEventListener("rwc-themechange", this.onThemeChange);
     this.resizeObserver.disconnect();
     this.controls.dispose();
-    if (this.mesh) this.mesh.geometry.dispose();
+    if (this.mesh) {
+      this.mesh.geometry.dispose();
+      this.mesh.material.dispose();
+    }
+    for (const material of Object.values(this.materials)) material.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }

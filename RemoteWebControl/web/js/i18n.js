@@ -11,6 +11,11 @@ const STRINGS = {
     "app.back": "Back",
     "app.paired": "Phone paired",
 
+    "theme.dark": "Dark",
+    "theme.light": "Light",
+    "theme.auto": "System",
+    "theme.label": "Theme: {name}",
+
     "error.network": "Cannot reach Cura. Is the PC on and Cura open?",
     "error.unauthorized": "This phone is not paired.",
     "error.scene_not_empty": "Cura's build plate (on the PC) has models on it. Clear it to use Remote Web Control.",
@@ -179,6 +184,11 @@ const STRINGS = {
     "app.name": "Remote Web Control",
     "app.back": "Volver",
     "app.paired": "Móvil emparejado",
+
+    "theme.dark": "Oscuro",
+    "theme.light": "Claro",
+    "theme.auto": "Sistema",
+    "theme.label": "Tema: {name}",
 
     "error.network": "No se puede conectar con Cura. ¿Está encendido el PC y abierto Cura?",
     "error.unauthorized": "Este móvil no está emparejado.",

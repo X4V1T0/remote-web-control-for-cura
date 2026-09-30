@@ -11,6 +11,7 @@ import { renderPair } from "./pages/pair.js";
 const view = document.getElementById("view");
 const title = document.getElementById("title");
 const back = document.getElementById("back");
+const themeButton = document.getElementById("theme");
 
 const routes = [
   [/^#?\/?$/, renderJobs],
@@ -39,6 +40,24 @@ const context = {
 
 back.addEventListener("click", () => {
   if (backTarget) context.navigate(backTarget);
+});
+
+// Theme button: cycles dark -> light -> system (see theme.js). ︎ keeps iOS from drawing emoji.
+const THEME_ICONS = { dark: "☾︎", light: "☀︎", auto: "◐︎" };
+
+function showTheme() {
+  const choice = window.rwcTheme.choice();
+  const label = t("theme.label", { name: t("theme." + choice) });
+  themeButton.textContent = THEME_ICONS[choice];
+  themeButton.title = label;
+  themeButton.setAttribute("aria-label", label);
+  return label;
+}
+
+themeButton.addEventListener("click", () => {
+  const choices = window.rwcTheme.choices;
+  window.rwcTheme.set(choices[(choices.indexOf(window.rwcTheme.choice()) + 1) % choices.length]);
+  toast(showTheme());
 });
 
 async function route() {
@@ -76,6 +95,7 @@ onUnauthorized(() => {
 
 async function start() {
   translatePage();
+  showTheme();
   // Pairing QR codes open "/?pin=123456": claim the token and clean the URL.
   const params = new URLSearchParams(location.search);
   const pin = params.get("pin");
