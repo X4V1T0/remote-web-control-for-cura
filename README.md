@@ -37,7 +37,7 @@ There are two ways to use it:
   - setting changes, returning the diff Cura recalculates;
   - a slicing queue with progress and cancellation;
   - G-code download, with the estimated print time and material.
-- **Phone app**: a web app served by the plugin itself. You can add it to your home screen, and it has a 3D viewer for placing the model. Nothing else to install. It is in **English and Spanish** and follows your phone's language.
+- **Phone app**: a web app served by the plugin itself. You can add it to your home screen, and it has a 3D viewer for placing the model. Nothing else to install. It is in **English and Spanish** and follows your phone's language, with a dark theme and a light one in Cura's colours.
 - **Docker image** with Cura, the plugin and optional noVNC, so you can see Cura's screen from a browser.
 - **Script** to bring your Cura configuration (printers, profiles, materials, plugins and scripts) into Docker.
 
@@ -206,10 +206,12 @@ If a value is invalid, the default is used and Cura's log says so (search for `[
 - **Jobs**: the list of jobs and their state. `+ New` to upload an STL.
 - **New job**: choose the STL, the printer and the profile. "Auto-orient on upload" needs the Auto Orientation plugin in Cura.
 - **Place**: a 3D view of the build plate. Rotate the model 90° around each axis, or tap "Auto-orient". The model always rests on the plate and is centred. If it does not fit, it turns red and the app explains why.
-- **Settings**: Cura's settings, with their visibility levels and warnings. An orange dot marks the settings changed in the job, and ↺ puts them back to the profile value. Changes are saved **in the job only**, never in your Cura profiles.
+- **Settings**: Cura's settings, with their visibility levels and warnings. A dot (orange in the dark theme, blue in the light one) marks the settings changed in the job, and ↺ puts them back to the profile value. Changes are saved **in the job only**, never in your Cura profiles.
 - **Slice**: progress and cancel; when done, the print time, material, "Download G-code" and "Share" (AirDrop, Files...).
 
 The app is in English or Spanish, following the phone's language. Setting names come from Cura's own translations in the same language.
+
+The button at the top right switches the theme: **dark** (the default), **light** (Cura's own light palette) or **system** (follows the phone's light/dark mode). The choice is remembered on each phone.
 
 ## Security
 

@@ -13,6 +13,7 @@
   <link rel="icon" type="image/png" href="icons/favicon-32.png">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="app.css">
+  <script src="js/theme.js"></script>
   <script type="importmap">
 { "imports": { "three": "./vendor/three.module.min.js", "three/addons/": "./vendor/" } }
   </script>
@@ -22,6 +23,7 @@
     <button class="icon-button" id="back" data-i18n-attr="aria-label:app.back" aria-label="Back" hidden>&#8249;</button>
     <h1 id="title">Remote Web Control</h1>
     <span class="topbar-spacer"></span>
+    <button class="icon-button theme-button" id="theme" type="button"></button>
   </header>
   <main id="view" aria-live="polite"></main>
   <div id="toast" role="status" hidden></div>
