@@ -56,8 +56,14 @@
   --toast-bg: #191919;
   --toast-text: #ffffff;
   --shadow: rgba(0, 0, 0, 0.18);
-  color-scheme: light;
+  /* Dark for the page itself: iOS draws its status bar gradient (full screen, added to the home
+     screen) from the root's colour scheme, and a light one shows as a white haze over the dark
+     blue header. The content below switches back to light for its native controls. */
+  color-scheme: dark;
 }
+
+:root[data-theme="light"] main,
+:root[data-theme="light"] #toast { color-scheme: light; }
 
 * { box-sizing: border-box; }
 
