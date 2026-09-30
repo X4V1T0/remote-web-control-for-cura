@@ -94,6 +94,13 @@ body { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: col
   border-bottom: 1px solid var(--topbar-line);
 }
 
+/* Added to the home screen on iOS: the system blurs a band under the status bar that reaches a
+   little below the safe area, and it cannot be turned off. The title sits clear of it, so the
+   band only covers the header's plain colour. */
+@media (display-mode: standalone) {
+  .topbar { padding-top: calc(var(--safe-top) + 24px); }
+}
+
 .topbar h1 {
   margin: 0;
   font-size: 18px;
