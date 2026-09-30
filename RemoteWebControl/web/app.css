@@ -16,6 +16,8 @@
   --topbar-bg: rgba(24, 28, 36, 0.94);
   --topbar-text: var(--text);
   --topbar-line: var(--line);
+  --topbar-blur: blur(8px);
+  --page-edge: var(--bg);
   --viewer-bg: #11141a;
   --knob: var(--text);
   --toast-bg: #0e1117;
@@ -47,6 +49,8 @@
   --topbar-bg: #08073f;
   --topbar-text: #ffffff;
   --topbar-line: #08073f;
+  --topbar-blur: none; /* A solid header: Safari extends it under the notch. */
+  --page-edge: #08073f;
   --viewer-bg: #fafafa;
   --knob: #ffffff;
   --toast-bg: #191919;
@@ -68,6 +72,10 @@ html, body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* iOS paints the status bar area and the overscroll with the page's own background: the header
+   colour there, the content colour on body. */
+html { background: var(--page-edge); }
+
 body { min-height: 100vh; min-height: 100dvh; }
 
 /* ------------------------------------------------------------------ layout */
@@ -82,7 +90,8 @@ body { min-height: 100vh; min-height: 100dvh; }
   padding: calc(var(--safe-top) + 8px) 12px 8px;
   background: var(--topbar-bg);
   color: var(--topbar-text);
-  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: var(--topbar-blur);
+  backdrop-filter: var(--topbar-blur);
   border-bottom: 1px solid var(--topbar-line);
 }
 
