@@ -5,6 +5,7 @@ import json
 import threading
 import time
 
+import numpy
 import pytest
 
 from RemoteWebControl.api import build_router
@@ -29,7 +30,8 @@ class SlicingCura(FakeCura):
         self.gate.set()
         self.slice_error = None
 
-    def slice(self, request, matrix, output_path, on_progress, is_cancelled):
+    def slice(self, request, matrices, output_path, on_progress, is_cancelled):
+        self.sliced = (request, [m.tolist() for m in matrices])
         on_progress(0.25)
         while not self.gate.wait(0.01):
             if is_cancelled():
@@ -38,7 +40,8 @@ class SlicingCura(FakeCura):
             raise self.slice_error
         with open(output_path, "w", encoding = "utf-8", newline = "") as f:  # Keep "\n" also on Windows.
             f.write(GCODE)
-        placement = {"matrix": IDENTITY, "fits": True, "bbox": {"min": [0, 0, 0], "max": [1, 1, 1]}, "warnings": []}
+        placed = {"matrix": IDENTITY, "fits": True, "bbox": {"min": [0, 0, 0], "max": [1, 1, 1]}, "warnings": []}
+        placement = {"objects": [placed for _ in matrices], "fits": True, "bbox": placed["bbox"]}
         return {"placement": placement, "result": {
             "print_time_s": 1234, "fits": True, "job_name": "CE3PRO_pieza",
             "material": [{"extruder": 0, "name": "PLA", "length_m": 1.5, "weight_g": 4.47, "cost": 0.0}]}}
@@ -121,8 +124,11 @@ def test_busy_job_rejects_changes_and_cancel_while_slicing(env):
     wait_state(server, job["id"], {"slicing"})
     assert wait_until(lambda: store.get(job["id"])["progress"] == 0.25)
 
-    for method, path, body in [("POST", "/slice", None), ("PUT", "/transform", json.dumps({"matrix": IDENTITY})),
-                               ("DELETE", "", None), ("POST", "/auto-orient", None)]:
+    item = "/objects/" + job["objects"][0]["id"]
+    for method, path, body in [("POST", "/slice", None), ("PUT", item + "/transform", json.dumps({"matrix": IDENTITY})),
+                               ("DELETE", "", None), ("POST", "/auto-orient", None), ("POST", "/arrange", None),
+                               ("POST", item + "/duplicate", None), ("DELETE", item, None),
+                               ("POST", item + "/auto-orient", None)]:
         response, data = call(server, method, "/api/jobs/{0}{1}".format(job["id"], path), body)
         assert (response.status, json.loads(data)["error"]["code"]) == (409, "job_busy"), path
 
@@ -157,9 +163,36 @@ def test_status_requests_are_not_blocked_by_a_slice(env):
     call(server, "POST", "/api/jobs/{0}/slice".format(job["id"]))
     wait_state(server, job["id"], {"slicing"})
     started = time.time()
-    for path in ("/api/jobs", "/api/jobs/" + job["id"], "/api/health", "/api/jobs/{0}/mesh".format(job["id"])):
+    mesh = "/api/jobs/{0}/objects/{1}/mesh".format(job["id"], job["objects"][0]["id"])
+    for path in ("/api/jobs", "/api/jobs/" + job["id"], "/api/health", mesh):
         assert call(server, "GET", path)[0].status == 200
     assert time.time() - started < 1.0
+
+
+def test_slice_uses_every_stored_matrix(env):
+    server, cura, store = env
+    job = json.loads(upload(server, files = [(binary_stl(box_triangles()), "a.stl"), (binary_stl(box_triangles()), "b.stl")])[1])
+    call(server, "POST", "/api/jobs/{0}/slice".format(job["id"]))
+    done = wait_state(server, job["id"], {"done"})
+    request, matrices = cura.sliced
+    assert matrices == [numpy.array(item["transform"]).reshape(4, 4).tolist() for item in job["objects"]]
+    assert len(request.stl_paths) == 2
+    assert done["placement"] == {"fits": True, "bbox": {"min": [0, 0, 0], "max": [1, 1, 1]}}
+
+
+def test_slice_refused_at_once_when_the_job_does_not_fit(env):
+    server, cura, store = env
+    job = new_job(server)
+    warning = {"code": "outside_build_volume", "message": "x"}
+
+    def misplace(j):
+        j["placement"]["fits"] = False
+        j["objects"][0]["placement"].update(fits = False, warnings = [warning])
+    store.update(job["id"], misplace)
+    response, data = call(server, "POST", "/api/jobs/{0}/slice".format(job["id"]))
+    error = json.loads(data)["error"]
+    assert (response.status, error["code"]) == (422, "does_not_fit") and "outside_build_volume" in error["message"]
+    assert store.get(job["id"])["state"] == "ready"
 
 
 def test_slice_error_is_stored(env):
@@ -176,7 +209,8 @@ def test_new_transform_invalidates_the_gcode(env):
     job = new_job(server)
     call(server, "POST", "/api/jobs/{0}/slice".format(job["id"]))
     wait_state(server, job["id"], {"done"})
-    call(server, "PUT", "/api/jobs/{0}/transform".format(job["id"]), json.dumps({"matrix": ROT_X_90}))
+    path = "/api/jobs/{0}/objects/{1}/transform".format(job["id"], job["objects"][0]["id"])
+    call(server, "PUT", path, json.dumps({"matrix": ROT_X_90}))
     after = store.get(job["id"])
     assert (after["state"], after["result"]) == ("ready", None)
     response, _ = call(server, "GET", "/api/jobs/{0}/gcode".format(job["id"]))

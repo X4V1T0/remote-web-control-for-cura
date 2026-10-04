@@ -57,6 +57,12 @@ export function formatNumber(value, decimals = 2) {
   return Number(value).toLocaleString(LOCALE, { maximumFractionDigits: decimals });
 }
 
+// "bracket.stl +2" for a job with three models.
+export function jobTitle(job) {
+  const count = Array.isArray(job.objects) ? job.objects.length : job.objects || 1;
+  return count > 1 ? `${job.name} +${count - 1}` : job.name;
+}
+
 const STATE_KINDS = { created: "busy", ready: "", queued: "busy", slicing: "busy", done: "ok", error: "error" };
 
 export function stateBadge(state) {
@@ -65,7 +71,7 @@ export function stateBadge(state) {
 }
 
 const WARNING_CODES = new Set([
-  "outside_build_volume", "disallowed_area", "extruder_disabled", "not_printable", "scaled", "mirrored",
+  "outside_build_volume", "disallowed_area", "extruder_disabled", "not_printable", "scaled", "mirrored", "overlapping",
 ]);
 
 export function warningLabel(warning) {

@@ -15,6 +15,7 @@ import numpy
 from PyQt6.QtCore import QTimer, QUrl
 
 from UM.Backend.Backend import BackendState
+from UM.Logger import Logger
 from UM.Math.Matrix import Matrix
 from UM.Mesh.MeshWriter import MeshWriter
 from UM.OutputDevice.OutputDevice import OutputDevice
@@ -24,6 +25,7 @@ from UM.Scene.Iterator.DepthFirstIterator import DepthFirstIterator
 from UM.Scene.SceneNode import SceneNode
 from UM.Scene.Selection import Selection
 
+from cura.Arranging.Nest2DArrange import Nest2DArrange
 from cura.Machines.ContainerTree import ContainerTree
 from cura.Settings.IntentManager import IntentManager
 
@@ -343,10 +345,12 @@ class SceneOps:
 
     # ------------------------------------------------------------------ 4. load
 
-    def start_load(self, path: str) -> LoadWaiter:
-        # Same reset as JobSpecs.qml does when the build plate becomes empty; without it the
-        # job name ({jobname} in the G-code) could keep the previous model's name.
-        self._application.getPrintInformation().setBaseName("")
+    def start_load(self, path: str, first: bool = True) -> LoadWaiter:
+        if first:
+            # Same reset as JobSpecs.qml does when the build plate becomes empty; without it the
+            # job name ({jobname} in the G-code) could keep the previous model's name. Later files
+            # do not change it, so the first one names the job, as in the GUI.
+            self._application.getPrintInformation().setBaseName("")
         waiter = LoadWaiter(self._application, path)
         waiter.connect()
         self._waiter = waiter
@@ -355,34 +359,103 @@ class SceneOps:
 
     # ------------------------------------------------------------------ place
 
-    def _single_model_node(self) -> Any:
+    def _object_nodes(self, count: Optional[int] = None) -> List[Any]:
+        """The job's models, in load order (= the order of the job's objects)."""
         nodes = [node for node in self._model_nodes() if node.callDecoration("isSliceable")]
-        if len(nodes) != 1:
-            raise ApiError(422, "load_failed", "Expected one model in the scene after loading, found {0}.".format(len(nodes)))
-        return nodes[0]
+        if count is not None and len(nodes) != count:
+            raise ApiError(422, "load_failed", "Expected {0} model(s) in the scene after loading, found {1}.".format(count, len(nodes)))
+        return nodes
 
     @staticmethod
     def mesh_center(node: Any) -> List[float]:
         center = node.getMeshData().getCenterPosition()
         return [0.0, 0.0, 0.0] if center is None else [center.x, center.y, center.z]
 
-    def place(self, matrix: Optional[numpy.ndarray]) -> Dict[str, Any]:
-        """Applies the job matrix (None = keep Cura's load placement), drops the model on the
-        plate, centres it and checks whether it fits. Returns the effective placement."""
-        node = self._single_model_node()
-        if node.getBoundingBox() is None:
-            raise ApiError(422, "load_failed", "The loaded model has no geometry.")
-        center = self.mesh_center(node)
-        if matrix is not None:
-            node.setTransformation(Matrix(coords.scene_matrix_from_printer(matrix, center)))
-
+    @staticmethod
+    def _drop(node: Any, centre: bool = False) -> None:
+        """Onto the build plate (like CuraApplication._readMeshFinished); optionally centred too."""
         bbox = node.getBoundingBox()
-        node.translate(Vector(-bbox.center.x, -bbox.bottom, -bbox.center.z), SceneNode.TransformSpace.World)
-        effective = coords.printer_matrix_from_scene(node.getWorldTransformation().getData(), center)
+        offset = Vector(-bbox.center.x, -bbox.bottom, -bbox.center.z) if centre else Vector(0, -bbox.bottom, 0)
+        node.translate(offset, SceneNode.TransformSpace.World)
+
+    def place(self, matrices: List[Optional[numpy.ndarray]], arrange: str = "auto", moved: Optional[List[int]] = None) -> Dict[str, Any]:
+        """Applies the job matrices (None = keep the model where it is), drops the models on the
+        plate and checks whether they fit. Returns the effective placement of every object.
+
+        arrange:
+            "exact"  only drop the models: the matrices are applied as they are (used to slice).
+            "auto"   one model is centred. With several, each keeps its position unless it is outside
+                     the build volume or overlaps another one; then the `moved` models (default: all)
+                     are re-arranged around the others with Cura's arrange, or all of them if that
+                     does not find room. If there is no room for every model, the `moved` ones that
+                     fit are placed and the rest are left beside the plate, like the GUI does.
+            "all"    re-arrange every model, like "Arrange All" in the GUI.
+        """
+        nodes = self._object_nodes(len(matrices))
+        for node, matrix in zip(nodes, matrices):
+            if node.getBoundingBox() is None:
+                raise ApiError(422, "load_failed", "A loaded model has no geometry.")
+            if matrix is not None:
+                node.setTransformation(Matrix(coords.scene_matrix_from_printer(matrix, self.mesh_center(node))))
+        for node in nodes:
+            self._drop(node, centre = arrange != "exact" and len(nodes) == 1)
+
+        if len(nodes) > 1 and arrange != "exact":
+            if arrange == "all":
+                self._arrange(nodes, [])
+            elif self._outside(nodes) or self._overlaps(nodes):
+                to_move = [nodes[i] for i in sorted(set(moved))] if moved else list(nodes)
+                fixed = [node for node in nodes if node not in to_move]
+                if not self._arrange(to_move, fixed) and not (fixed and self._arrange(nodes, [])):
+                    self._arrange(to_move, fixed, partial = True)
 
         volume = self._application.getBuildVolume()
+        overlapping = self._overlaps(nodes)
+        objects = [self._node_placement(node, volume, index in overlapping) for index, node in enumerate(nodes)]
+        boxes = [item["bbox"] for item in objects]
+        return {
+            "objects": objects,
+            "fits": all(item["fits"] for item in objects),
+            "bbox": {"min": [min(box["min"][i] for box in boxes) for i in range(3)],
+                     "max": [max(box["max"][i] for box in boxes) for i in range(3)]},
+        }
+
+    def _arrange(self, nodes: List[Any], fixed: List[Any], partial: bool = False) -> bool:
+        """Cura's own arrange (Nest2DArrange, as "Arrange All" and loading do). Unless `partial`, it
+        moves nothing if it does not find room for every node. Returns whether it found room for all."""
+        if not nodes:
+            return True
+        arranger = Nest2DArrange(nodes, self._application.getBuildVolume(), fixed, factor = 1000)
+        try:
+            arranged = arranger.arrange(only_if_full_success = not partial)
+        except Exception as e:  # libnest2d can fail on degenerate hulls; the models then stay where they are.
+            Logger.log("w", "[RemoteWebControl] Arrange failed: {0!r}".format(e))
+            return False
+        for node in nodes:
+            self._drop(node)
+        return arranged
+
+    def _outside(self, nodes: List[Any]) -> bool:
+        volume = self._application.getBuildVolume()
+        for node in nodes:
+            volume.checkBoundsAndUpdate(node)
+        return any(node.isOutsideBuildArea() for node in nodes)
+
+    @staticmethod
+    def _overlaps(nodes: List[Any]) -> set:
+        """Indices of the models whose footprints (convex hulls on the plate) overlap another one."""
+        hulls = [node.callDecoration("getConvexHull") for node in nodes]
+        result = set()
+        for i in range(len(nodes)):
+            for j in range(i + 1, len(nodes)):
+                if hulls[i] is not None and hulls[j] is not None and hulls[i].intersectsPolygon(hulls[j]) is not None:
+                    result.update((i, j))
+        return result
+
+    def _node_placement(self, node: Any, volume: Any, overlapping: bool) -> Dict[str, Any]:
+        effective = coords.printer_matrix_from_scene(node.getWorldTransformation().getData(), self.mesh_center(node))
         volume.checkBoundsAndUpdate(node)
-        fits = not node.isOutsideBuildArea()
+        fits = not node.isOutsideBuildArea() and not overlapping
 
         warnings = []
         volume_box = volume.getBoundingBox()
@@ -394,6 +467,8 @@ class SceneOps:
         extruders = self._application.getGlobalContainerStack().extruderList
         if position is not None and int(position) < len(extruders) and not extruders[int(position)].isEnabled:
             warnings.append({"code": "extruder_disabled", "message": "The model is assigned to a disabled extruder."})
+        if overlapping:
+            warnings.append({"code": "overlapping", "message": "The model overlaps another one: there is no room for all of them."})
         if not fits and not warnings:
             warnings.append({"code": "not_printable", "message": "Cura marks the model as outside the build area."})
         rigid, mirrored = coords.describe_linear_part(effective)
@@ -417,12 +492,12 @@ class SceneOps:
     # the GUI. The heavy part (compute_orientation) runs on the scene worker thread, not on the
     # main thread; the other two methods run on the main thread.
 
-    def orientation_input(self) -> Dict[str, Any]:
+    def orientation_input(self, index: int) -> Dict[str, Any]:
         registry = self._application.getPluginRegistry()
         if not registry.isActivePlugin(ORIENTATION_PLUGIN_ID):
             raise ApiError(422, "auto_orient_unavailable",
                            "Auto-orientation needs the 'Auto Orientation' plugin (Cura Marketplace) installed and enabled.")
-        node = self._single_model_node()
+        node = self._object_nodes()[index]
         return {
             "vertices": numpy.array(node.getMeshDataTransformed().getVertices(), copy = True),
             "min_volume": bool(self._application.getPreferences().getValue(ORIENTATION_MIN_VOLUME_PREFERENCE)),
@@ -439,12 +514,12 @@ class SceneOps:
         axis, angle = result.euler_parameter
         return {"axis": [float(a) for a in axis], "angle": float(angle)}
 
-    def apply_orientation(self, orientation: Dict[str, Any]) -> None:
-        """Same quaternion as CalculateOrientationJob; place() re-centres and drops the model afterwards."""
+    def apply_orientation(self, index: int, orientation: Dict[str, Any]) -> None:
+        """Same quaternion as CalculateOrientationJob; place() drops the model (and arranges) afterwards."""
         axis, angle = orientation["axis"], orientation["angle"]
         rotation = Quaternion.fromAngleAxis(angle, Vector(-axis[0], -axis[1], -axis[2]))
         rotation = Quaternion.fromAngleAxis(-0.5 * math.pi, Vector(1, 0, 0)) * rotation
-        self._single_model_node().rotate(rotation, SceneNode.TransformSpace.World)
+        self._object_nodes()[index].rotate(rotation, SceneNode.TransformSpace.World)
 
     # ------------------------------------------------------------------ slice
 

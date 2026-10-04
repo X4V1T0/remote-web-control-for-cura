@@ -82,10 +82,10 @@ class RemoteWebControlPlugin(Extension):
         self._jobs = JobService(
             self._store, self._worker, runner,
             resolve_profile = self._service.resolve_profile,
-            place = lambda request, matrix, auto_orient: run_placement(
-                scene_ops, runner, request, matrix, _log, auto_orient = auto_orient),
-            slice = lambda request, matrix, output_path, on_progress, is_cancelled: run_slice(
-                scene_ops, runner, request, matrix, output_path, _log, on_progress, is_cancelled),
+            place = lambda request, matrices, auto_orient, arrange, moved: run_placement(
+                scene_ops, runner, request, matrices, _log, auto_orient = auto_orient, arrange = arrange, moved = moved),
+            slice = lambda request, matrices, output_path, on_progress, is_cancelled: run_slice(
+                scene_ops, runner, request, matrices, output_path, _log, on_progress, is_cancelled),
             read_settings = lambda printer_id, profile, overrides, visibility, language, extruder: read_settings(
                 scene_ops, settings_ops, runner, printer_id, profile, overrides, visibility, language, extruder, _log),
             settings_diff = lambda printer_id, profile, overrides, scope, extruder, key, value: settings_diff(

@@ -7,7 +7,7 @@ of MB and the email parser makes several copies of the body.
 from dataclasses import dataclass
 from email.message import Message
 from email.utils import collapse_rfc2231_value
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from .errors import ApiError
 
@@ -48,6 +48,11 @@ def _param(message: Message, name: str) -> Optional[str]:
 
 def parse_form_data(content_type: str, body: bytes) -> Dict[str, Part]:
     """Parses a multipart/form-data body. Returns the parts by field name (the last one wins)."""
+    return {part.name: part for part in parse_form_parts(content_type, body)}
+
+
+def parse_form_parts(content_type: str, body: bytes) -> List[Part]:
+    """Parses a multipart/form-data body. Returns every named part in order (fields may repeat)."""
     header = _parse_header_params(content_type or "")
     if header.get_content_type() != "multipart/form-data":
         raise ApiError(415, "unsupported_media_type", "Expected a multipart/form-data request.")
@@ -56,7 +61,7 @@ def parse_form_data(content_type: str, body: bytes) -> Dict[str, Part]:
         raise ApiError(400, "invalid_form", "multipart/form-data without boundary.")
 
     delimiter = b"--" + boundary.encode("latin-1")
-    parts = {}  # type: Dict[str, Part]
+    parts = []  # type: List[Part]
     position = body.find(delimiter)
     if position < 0:
         raise ApiError(400, "invalid_form", "Malformed multipart body (boundary not found).")
@@ -86,11 +91,11 @@ def parse_form_data(content_type: str, body: bytes) -> Dict[str, Part]:
         field_name = _param(disposition_message, "name")
         filename = _param(disposition_message, "filename")
         if field_name:
-            parts[str(field_name)] = Part(
+            parts.append(Part(
                 name = str(field_name),
                 filename = str(filename) if filename is not None else None,
                 content_type = part_headers.get("Content-Type"),
                 data = body[headers_end + 4:next_delimiter],
-            )
+            ))
         position = next_delimiter + 2 + len(delimiter)
     return parts

@@ -1,6 +1,6 @@
 # Remote Web Control for Cura
 
-A plugin for [UltiMaker Cura](https://ultimaker.com/software/ultimaker-cura/) that lets you slice **from your phone**: upload an STL, pick a printer and a profile, place the model in a 3D viewer, change settings, slice and download the G-code.
+A plugin for [UltiMaker Cura](https://ultimaker.com/software/ultimaker-cura/) that lets you slice **from your phone**: upload one or more STLs, pick a printer and a profile, place the models in a 3D viewer, change settings, slice and download the G-code.
 
 Cura still does all the work: the plugin uses Cura's own settings stack, scene, slicing engine and post-processing scripts. The **G-code is the same one Cura's GUI would produce** with the same printer, profile, settings and orientation.
 
@@ -33,7 +33,7 @@ There are two ways to use it:
 - **HTTP API** ([reference](docs/API.md)):
   - Cura's printers and profiles;
   - the settings schema, with Cura's Basic/Advanced/Expert visibility and Cura's translations;
-  - jobs with a mesh preview, orientation and auto-orientation;
+  - jobs with one or more models on the same plate (several STLs, copies), with a mesh preview, orientation, auto-orientation and Cura's own arrange;
   - setting changes, returning the diff Cura recalculates;
   - a slicing queue with progress and cancellation;
   - G-code download, with the estimated print time and material.
@@ -196,7 +196,7 @@ job_retention_days =
 | `port` | `8765` | TCP port of the API and the app. In Docker, change `RWC_PORT` in `.env` instead. |
 | `token` | *(generated)* | API token. Leave it empty: a random one is generated on start-up, saved here and in `RemoteWebControl/token.txt` (inside Cura's data folder), and written to the log. To change it, empty it and restart; you will have to pair your phones again. |
 | `cors_origins` | *(empty)* | Only if you use the API from a web page hosted at **another** address: its origins, separated by commas (for example `http://192.168.1.50:5173`). The bundled app does not need it. `*` allows any origin (not recommended). |
-| `max_upload_mb` | `200` | Maximum size of an uploaded STL, in MB. |
+| `max_upload_mb` | `200` | Maximum size of an upload (all the STLs sent at once), in MB. |
 | `job_retention_days` | `7` | Days jobs are kept. Older ones are deleted when Cura starts. `0` = all are deleted on start-up. |
 
 If a value is invalid, the default is used and Cura's log says so (search for `[RemoteWebControl]`).
@@ -204,8 +204,8 @@ If a value is invalid, the default is used and Cura's log says so (search for `[
 ## Using the app
 
 - **Jobs**: the list of jobs and their state. `+ New` to upload an STL.
-- **New job**: choose the STL, the printer and the profile. "Auto-orient on upload" needs the Auto Orientation plugin in Cura.
-- **Place**: a 3D view of the build plate. Rotate the model 90° around each axis, or tap "Auto-orient". The model always rests on the plate and is centred. If it does not fit, it turns red and the app explains why.
+- **New job**: choose one or more STLs (small parts can be printed together on the same plate), the printer and the profile. "Auto-orient on upload" needs the Auto Orientation plugin in Cura.
+- **Place**: a 3D view of the build plate. Tap a model (in the view or in the list) to select it, rotate it 90° around each axis or tap "Auto-orient". You can also add more STLs, duplicate a model to print several copies, remove one, or "Arrange all". The models always rest on the plate, and Cura's own arrange makes room when a model would overlap another one or fall outside the plate. A model that does not fit turns red and the app explains why.
 - **Settings**: Cura's settings, with their visibility levels and warnings. A dot (orange in the dark theme, blue in the light one) marks the settings changed in the job, and ↺ puts them back to the profile value. Changes are saved **in the job only**, never in your Cura profiles.
 - **Slice**: progress and cancel; when done, the print time, material, "Download G-code" and "Share" (AirDrop, Files...).
 
@@ -254,7 +254,7 @@ tests/               tests of the parts that do not depend on Cura
   scripts/smoke_test.sh
   RWC_URL=http://192.168.1.10:8765 RWC_TOKEN=... PRINTER_ID="My printer" scripts/smoke_test.sh
   ```
-  It runs the whole flow: printers, profiles, uploading an STL, rotating, auto-orienting, changing a setting, slicing and downloading.
+  It runs the whole flow: printers, profiles, uploading two STLs, rotating, duplicating, arranging, auto-orienting, changing a setting, slicing and downloading.
 - **Icons**: `uv run --no-project --python 3.12 --with pillow -- python scripts/make_icons.py`.
 - **Translations**: the app's texts are in [`RemoteWebControl/web/js/i18n.js`](RemoteWebControl/web/js/i18n.js). To add a language, add a block with the same keys and extend the language detection at the top of the file.
 - **No external dependencies**: the plugin only uses the Python standard library bundled with Cura, plus numpy. The app needs no build step: HTML, CSS and JavaScript with native modules.

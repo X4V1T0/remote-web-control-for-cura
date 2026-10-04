@@ -19,16 +19,18 @@ Common HTTP codes:
 |---|---|---|
 | 400 | `invalid_json`, `invalid_form`, `invalid_profile`, `invalid_matrix`, `missing_file`, `missing_printer_id` | Malformed request. |
 | 401 | `unauthorized` | The token is missing or wrong. |
-| 404 | `not_found`, `printer_not_found`, `job_not_found` | It does not exist. |
+| 404 | `not_found`, `printer_not_found`, `job_not_found`, `object_not_found` | It does not exist. |
 | 405 | `method_not_allowed` | |
 | 409 | `scene_not_empty` | The build plate of Cura's GUI has models on it. Remote Web Control only works with an empty plate. |
 | 409 | `job_busy` | The job is queued or being sliced. |
+| 409 | `last_object` | Removing the only model of a job. |
 | 409 | `job_not_running`, `gcode_not_ready` | Cancelling a job that is neither queued nor slicing, or asking for the G-code before `done`. |
 | 413 | `payload_too_large` | Larger than `max_upload_mb`. |
 | 415 | `unsupported_media_type` | `POST /api/jobs` without `multipart/form-data`. |
-| 422 | `invalid_stl`, `profile_not_found`, `profile_not_available`, `profile_not_applied`, `load_failed`, `auto_orient_unavailable` | Well-formed data that Cura cannot use. |
+| 422 | `invalid_stl`, `profile_not_found`, `profile_not_available`, `profile_not_applied`, `load_failed`, `auto_orient_unavailable`, `too_many_objects` | Well-formed data that Cura cannot use (a job has at most 100 models). |
+| 422 | `does_not_fit` | Slicing a job whose models do not fit on the plate. |
 | 422 | `unknown_setting`, `invalid_value`, `formulas_not_allowed`, `use_extruder_scope`, `not_settable_per_extruder`, `invalid_extruder` | A setting change that cannot be applied. |
-| 400 | `invalid_visibility`, `invalid_language`, `invalid_request` | Malformed settings parameters. |
+| 400 | `invalid_visibility`, `invalid_language`, `invalid_request` | Malformed settings or copy parameters. |
 | 500 | `internal_error` | Unexpected error; the details are in `cura.log`. |
 | 503 | `main_thread_timeout`, `scene_busy` | Cura is busy or has a modal dialog open. |
 
@@ -172,24 +174,26 @@ Rules:
 
 ## Jobs
 
-A job is a document stored in `<Cura data folder>/RemoteWebControl/jobs/<id>/`. Cura's scene is rebuilt from scratch for each operation: the plate is checked to be empty, the job's printer and profile are activated, the STL is loaded, the model is placed... and Cura is **always** left as it was (active printer, profiles, unsaved settings, preferences).
+A job is one build plate: one or more **objects** (models) sliced together, each with its own STL and matrix. Copies of a model share its file. The job is stored in `<Cura data folder>/RemoteWebControl/jobs/<id>/`. Cura's scene is rebuilt from scratch for each operation: the plate is checked to be empty, the job's printer and profile are activated, the STLs are loaded one after another (like dropping several files on the GUI), the models are placed... and Cura is **always** left as it was (active printer, profiles, unsaved settings, preferences).
 
-States: `created → ready → queued → slicing → done | error`. If a sliced job is re-oriented, it goes back to `ready` and its G-code is discarded.
+States: `created → ready → queued → slicing → done | error`. Any change to the objects (orientation, copies, new files...) takes a sliced job back to `ready` and discards its G-code.
 
-### `POST /api/jobs` — upload an STL
+Changes to the objects of a job run one at a time, in Cura's own queue, and every one of them answers with the **full, updated job**.
+
+### `POST /api/jobs` — upload one or more STLs
 
 `multipart/form-data` with these fields:
-- `file`: the STL (binary or ASCII).
+- `file`: an STL (binary or ASCII). **Repeat the field** to put several models on the same plate.
 - `printer_id`: the printer.
 - `profile`: optional, JSON as above. If missing, the profile that printer has in Cura is used.
-- `auto_orient`: optional, `true` to auto-orient on upload (see [Auto-orientation](#auto-orientation)).
+- `auto_orient`: optional, `true` to auto-orient every model on upload (see [Auto-orientation](#auto-orientation)).
 
 ```sh
-curl -H "$H" -F "file=@samples/l_bracket.stl" -F "printer_id=Creality Ender-3 Pro" \
-     -F 'profile={"quality": "standard"}' http://127.0.0.1:8765/api/jobs
+curl -H "$H" -F "file=@samples/l_bracket.stl" -F "file=@samples/l_bracket.stl" \
+     -F "printer_id=Creality Ender-3 Pro" -F 'profile={"quality": "standard"}' http://127.0.0.1:8765/api/jobs
 ```
 
-It returns `201` with the full job, including the initial transformation Cura applies on load (auto-scaling if enabled in Cura; always centred and resting on the plate):
+`max_upload_mb` applies to the whole request. It returns `201` with the full job, including the placement Cura gives the models on load (auto-scaling if enabled in Cura, arranged on the plate and resting on it; a single model is centred):
 
 ```json
 {
@@ -200,26 +204,34 @@ It returns `201` with the full job, including the initial transformation Cura ap
   "printer_id": "Creality Ender-3 Pro",
   "profile": { "quality": "standard", "intent": "default", "quality_changes": null },
   "overrides": { "global": {}, "extruders": {} },
-  "transform": [1, 0, 0, -15,  0, 1, 0, -5,  0, 0, 1, 0,  0, 0, 0, 1],
+  "objects": [
+    { "id": "b3cc448f4b77", "file": "8ade1648e41f", "name": "l_bracket.stl",
+      "mesh": { "triangles": 28, "preview_triangles": 28, "decimated": false,
+                "bbox": { "min": [0, 0, 0], "max": [30, 10, 20] } },
+      "transform": [1, 0, 0, -15,  0, 1, 0, -5,  0, 0, 1, 0,  0, 0, 0, 1],
+      "placement": { "fits": true, "bbox": { "min": [-15, -5, 0], "max": [15, 5, 20] }, "warnings": [] } },
+    { "id": "76b94895e9c5", "file": "16dab112427b", "name": "l_bracket.stl", "...": "..." }
+  ],
   "state": "ready",
   "progress": 0.0,
   "error": null,
-  "mesh": { "triangles": 28, "preview_triangles": 28, "decimated": false,
-            "bbox": { "min": [0, 0, 0], "max": [30, 10, 20] } },
-  "placement": { "fits": true, "bbox": { "min": [-15, -5, 0], "max": [15, 5, 20] }, "warnings": [] },
+  "placement": { "fits": true, "bbox": { "min": [-15, -40, 0], "max": [15, 5, 20] } },
   "result": null
 }
 ```
 
-- `transform`: a *row-major* 4×4 matrix that takes the vertices **of the original STL** to their final position on the plate, in printer coordinates. It is applied as `p' = M · p`, with the translation in the last column.
-- `mesh.bbox`: bounding box of the original STL. `placement.bbox`: bounding box once placed.
-- File names with characters that are invalid on Windows are sanitised. That name is what Cura uses for the job name (`{jobname}` in the G-code).
+- `name`: the first model's file name. Cura names the job after it (`{jobname}` in the G-code), as when several files are loaded in the GUI. File names with characters that are invalid on Windows are sanitised.
+- `objects[].transform`: a *row-major* 4×4 matrix that takes the vertices **of the original STL** to their final position on the plate, in printer coordinates. It is applied as `p' = M · p`, with the translation in the last column.
+- `objects[].mesh.bbox`: bounding box of the original STL. `objects[].placement.bbox`: bounding box once placed.
+- `objects[].placement.fits`: the same test Cura uses to mark a model as not printable (build volume, disallowed areas with brim or skirt margins, disabled extruder), plus not overlapping another model.
+- `objects[].placement.warnings`: a list of `{code, message}` with the codes `outside_build_volume`, `disallowed_area`, `extruder_disabled`, `overlapping`, `not_printable`, `scaled` and `mirrored`.
+- `placement`: the whole plate. `fits` is true only if every model fits.
 
 ### `GET /api/jobs` · `GET /api/jobs/{id}` · `DELETE /api/jobs/{id}`
 
-The list returns a summary per job (`id`, `name`, `created_at`, `updated_at`, `printer_id`, `state`, `progress`, `error`), newest first. `DELETE` answers `204`, or `409 job_busy` if the job is queued or slicing.
+The list returns a summary per job (`id`, `name`, `created_at`, `updated_at`, `printer_id`, `state`, `progress`, `error` and `objects`, the number of models), newest first. `DELETE` answers `204`, or `409 job_busy` if the job is queued or slicing.
 
-### `GET /api/jobs/{id}/mesh` — mesh for the preview
+### `GET /api/jobs/{id}/objects/{object}/mesh` — mesh for the preview
 
 `application/octet-stream` (gzip if the client accepts it), little-endian:
 
@@ -230,36 +242,53 @@ count   uint32   number of triangles
 data    float32[count * 9]  (x, y, z) × 3 per triangle, printer coordinates of the UNTRANSFORMED STL
 ```
 
-The client applies `transform` itself. STLs with more than 800,000 triangles are simplified for the preview only (grid vertex clustering); slicing always uses the original.
+The client applies the object's `transform` itself. Copies have the same `file`, so their mesh only needs downloading once. STLs with more than 800,000 triangles are simplified for the preview only (grid vertex clustering); slicing always uses the original.
 
-### `PUT /api/jobs/{id}/transform` — orient the model
+### How the models are placed
+
+- **One model**: Cura applies its matrix, then **drops it onto the plate and centres it**, so the translation you send is not kept.
+- **Several models**: each one keeps its X/Y position and is dropped onto the plate. If a change leaves a model outside the build volume or overlapping another one, Cura's own arrange (the one behind "Arrange All") finds room for the models that changed, around the others; if there is none, it re-arranges all of them; and if they do not all fit, the ones that fit are placed and the rest are left beside the plate (`outside_build_volume`), as the GUI does.
+- The arrange may rotate models around the vertical axis, like in the GUI.
+
+The effective matrices are stored in the job, and slicing applies them exactly as they are, so the G-code always matches the job.
+
+### `PUT /api/jobs/{id}/objects/{object}/transform` — orient a model
 
 ```sh
 # Rotate 90° around X
 curl -H "$H" -X PUT -d '{"matrix": [1,0,0,0, 0,0,-1,0, 0,1,0,0, 0,0,0,1]}' \
-     http://127.0.0.1:8765/api/jobs/$ID/transform
-```
-```json
-{ "matrix": [1, 0, 0, -15,  0, 0, -1, 10,  0, 1, 0, 0,  0, 0, 0, 1],
-  "fits": true, "bbox": { "min": [-15, -10, 0], "max": [15, 10, 10] }, "warnings": [] }
+     http://127.0.0.1:8765/api/jobs/$ID/objects/$OBJECT/transform
 ```
 
-Cura applies the matrix and then **drops the model onto the plate and centres it**, so the translation you send is not kept. The response contains the effective matrix, which is what the job stores.
-- `fits`: the same test Cura uses to mark a model as not printable (build volume, disallowed areas with brim or skirt margins, disabled extruder).
-- `warnings`: a list of `{code, message}` with the codes `outside_build_volume`, `disallowed_area`, `extruder_disabled`, `not_printable`, `scaled` and `mirrored`.
+It answers with the job, which has the effective matrix. To rotate a model in place, rotate around its own centre: `T(c) · R · T(-c) · transform`, with `c` the centre of its `placement.bbox`. Scaling and mirroring are allowed (any non-singular affine matrix).
 
-Scaling and mirroring are allowed (any non-singular affine matrix). If the job was already sliced, its result is discarded.
+### `POST /api/jobs/{id}/objects` — add models
+
+`multipart/form-data` with one or more `file` fields, and optionally `auto_orient=true`. Cura places the new models around the others, which do not move.
+
+### `POST /api/jobs/{id}/objects/{object}/duplicate` — copies
+
+Optional body `{"count": n}` (1 by default). The copies keep the model's orientation and are placed around the others.
+
+### `DELETE /api/jobs/{id}/objects/{object}` — remove a model
+
+It answers with the job. The last model cannot be removed (`409 last_object`): delete the job instead.
+
+### `POST /api/jobs/{id}/arrange` — arrange all
+
+Re-arranges every model, like "Arrange All" in the GUI.
 
 ### Auto-orientation
 
-- **On upload**: add the field `auto_orient=true` to the `POST /api/jobs` form.
-- **On an existing job**: `POST /api/jobs/{id}/auto-orient`, with no body. It answers the same as `PUT /transform`.
+- **On upload**: add the field `auto_orient=true` to the `POST /api/jobs` (or `POST /api/jobs/{id}/objects`) form.
+- **One model**: `POST /api/jobs/{id}/objects/{object}/auto-orient`, with no body.
+- **Every model**: `POST /api/jobs/{id}/auto-orient`, with no body.
 
 It uses the same computation as Cura's **Auto Orientation** plugin (Marketplace; Christoph Schranz's MeshTweaker), in extended mode and with its `min_volume` preference, just like auto-orientation on load in the GUI. The plugin must be installed and enabled in Cura; otherwise the answer is `422 auto_orient_unavailable`. Large models can take a while: it runs outside the main thread, so the API keeps answering in the meantime.
 
 ### Slicing: `POST /api/jobs/{id}/slice`
 
-The job becomes `queued` and the response comes back straight away with `202`. Jobs are sliced **one at a time**, in order of arrival, because Cura has a single scene and a single CuraEngine. Orienting or auto-orienting jumps ahead of slices that have not started yet; a running slice is not interrupted.
+The job becomes `queued` and the response comes back straight away with `202`. Jobs are sliced **one at a time**, in order of arrival, because Cura has a single scene and a single CuraEngine. Changes to the models (orienting, adding, copies...) jump ahead of slices that have not started yet; a running slice is not interrupted. A job whose models do not fit is refused at once (`422 does_not_fit`).
 
 To follow it, poll `GET /api/jobs/{id}` every 1 or 2 seconds:
 - `state`: `queued`, then `slicing`, and finally `done` or `error`.

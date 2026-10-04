@@ -1,4 +1,4 @@
-// New job: STL file + printer + profile (+ auto-orientation), uploaded with progress.
+// New job: one or more STL files + printer + profile (+ auto-orientation), uploaded with progress.
 
 import { api, errorMessage } from "../api.js";
 import { el, formatNumber, toast } from "../util.js";
@@ -11,9 +11,10 @@ export async function renderNewJob(view, _params, context) {
   context.setBack("#/");
 
   // No "accept" filter: iOS does not know the .stl type and would grey the files out.
-  const fileInput = el("input", { type: "file", class: "hidden" });
-  const fileLabel = el("span", { class: "grow muted", text: t("new.no_file") });
-  const pickButton = el("button", { type: "button", text: t("new.pick"), onclick: () => fileInput.click() });
+  const fileInput = el("input", { type: "file", multiple: true, class: "hidden" });
+  const fileList = el("div", { class: "stack" });
+  const pickButton = el("button", { type: "button", class: "block", text: t("new.pick"), onclick: () => fileInput.click() });
+  const files = []; // Several picks add up, so files from different folders can go on the same plate.
   const printerSelect = el("select", { "aria-label": t("new.printer") });
   const profileSelect = el("select", { "aria-label": t("new.profile") });
   const autoOrient = el("input", { type: "checkbox" });
@@ -23,19 +24,33 @@ export async function renderNewJob(view, _params, context) {
   const status = el("div", { class: "muted small center" });
 
   fileInput.addEventListener("change", () => {
-    const file = fileInput.files[0];
-    fileLabel.textContent = file ? `${file.name} (${formatNumber(file.size / 1048576, 1)} MB)` : t("new.no_file");
-    fileLabel.classList.toggle("muted", !file);
-    updateSubmit();
+    for (const file of fileInput.files) {
+      const same = (other) => other.name === file.name && other.size === file.size && other.lastModified === file.lastModified;
+      if (!files.some(same)) files.push(file);
+    }
+    fileInput.value = "";
+    renderFiles();
   });
 
+  function renderFiles() {
+    fileList.replaceChildren(...(files.length ? files.map((file, index) => el("div", { class: "row" },
+      el("span", { class: "grow name", text: file.name }),
+      el("span", { class: "muted small", text: fileSize(file.size) }),
+      el("button", {
+        type: "button", class: "small", text: "✕", "aria-label": t("new.remove_file", { name: file.name }),
+        onclick: () => { files.splice(index, 1); renderFiles(); },
+      }))) : [el("div", { class: "muted", text: t("new.no_file") })]));
+    pickButton.textContent = files.length ? t("new.pick_more") : t("new.pick");
+    updateSubmit();
+  }
+
   function updateSubmit() {
-    submit.disabled = !(fileInput.files[0] && printerSelect.value && profileSelect.value);
+    submit.disabled = !(files.length && printerSelect.value && profileSelect.value);
   }
 
   view.append(el("form", { class: "stack", onsubmit: upload },
     el("div", { class: "card stack" },
-      el("div", { class: "row" }, fileLabel, pickButton), fileInput),
+      fileList, pickButton, el("div", { class: "muted small", text: t("new.files_hint") }), fileInput),
     el("div", { class: "card stack" },
       el("label", { class: "field" }, el("span", { text: t("new.printer") }), printerSelect),
       el("label", { class: "field" }, el("span", { text: t("new.profile") }), profileSelect),
@@ -44,6 +59,8 @@ export async function renderNewJob(view, _params, context) {
           el("div", { class: "muted small", text: t("new.auto_orient_hint") })),
         el("span", { class: "switch" }, autoOrient, el("span")))),
     submit, progress, status));
+
+  renderFiles();
 
   let printers;
   try {
@@ -73,15 +90,14 @@ export async function renderNewJob(view, _params, context) {
 
   async function upload(event) {
     event.preventDefault();
-    const file = fileInput.files[0];
-    if (!file) return;
-    if (!/\.stl$/i.test(file.name)) {
+    if (!files.length) return;
+    if (files.some((file) => !/\.stl$/i.test(file.name))) {
       toast(t("new.not_stl"), { error: true });
       return;
     }
     localStorage.setItem(AUTO_ORIENT_KEY, autoOrient.checked ? "1" : "0");
     const form = new FormData();
-    form.append("file", file, file.name);
+    files.forEach((file) => form.append("file", file, file.name));
     form.append("printer_id", printerSelect.value);
     form.append("profile", profileSelect.value);
     form.append("auto_orient", autoOrient.checked ? "true" : "false");
@@ -93,8 +109,9 @@ export async function renderNewJob(view, _params, context) {
     try {
       const job = await api.createJob(form, (fraction) => {
         bar.style.width = Math.round(fraction * 100) + "%";
+        const many = files.length > 1 ? "_many" : "";
         if (fraction >= 1) status.textContent = autoOrient.checked
-          ? t("new.placing_orienting") : t("new.placing");
+          ? t("new.placing_orienting" + many) : t("new.placing" + many);
       });
       context.navigate(`#/job/${job.id}/place`);
     } catch (e) {
@@ -104,6 +121,10 @@ export async function renderNewJob(view, _params, context) {
       updateSubmit();
     }
   }
+}
+
+function fileSize(bytes) {
+  return bytes < 1048576 ? `${formatNumber(Math.max(1, bytes / 1024), 0)} KB` : `${formatNumber(bytes / 1048576, 1)} MB`;
 }
 
 export function profileLabel(quality, intent) {

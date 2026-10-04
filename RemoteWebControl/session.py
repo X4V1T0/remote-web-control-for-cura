@@ -6,7 +6,7 @@ The scene is ephemeral. For every operation it is rebuilt from the job document:
                  profile containers and its user containers
     2. activate  switch to the job's printer and profile (user containers cleared first)
     3. overrides write the job's overrides into the user containers
-    4. load      readLocalFile() and wait for fileCompleted
+    4. load      readLocalFile() each file and wait for its fileCompleted
     5. settle    let Qt's event loop run so BuildVolume/ConvexHull timers catch up
     6. ...       the caller's work (place, slice)
     7. restore   ALWAYS: empty the scene, restore profile, user values and active printer
@@ -15,9 +15,10 @@ The scene is ephemeral. For every operation it is rebuilt from the job document:
 """
 
 import contextlib
+import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from .errors import ApiError
 from . import settings_schema
@@ -33,7 +34,7 @@ SETTLE_S = 0.5  # BuildVolume timers are 100-200 ms (docs/DESIGN.md, section 7).
 class SceneRequest:
     printer_id: str
     profile: Dict[str, Optional[str]]
-    stl_path: str
+    stl_paths: List[str]  # One per object, in the job's order (copies repeat the same file).
     overrides: Dict[str, Any] = field(default_factory = lambda: {"global": {}, "extruders": {}})
 
 
@@ -93,9 +94,13 @@ def materialized(ops: Any, runner: MainThreadRunner, request: SceneRequest, log:
                  sleep: Callable[[float], None] = time.sleep) -> Iterator[None]:
     with stacks_session(ops, runner, request.printer_id, request.profile, request.overrides, log):
         sleep(settle)
-        waiter = runner.run(ops.start_load, request.stl_path)
-        if not waiter.wait(load_timeout):
-            raise ApiError(422, "load_failed", "Cura did not finish loading the model within {0:.0f} s.".format(load_timeout))
+        # One file at a time, like dropping several files on the GUI: each new model is arranged
+        # around the ones already on the plate, and the job name comes from the first one.
+        for index, path in enumerate(request.stl_paths):
+            waiter = runner.run(ops.start_load, path, index == 0)
+            if not waiter.wait(load_timeout):
+                raise ApiError(422, "load_failed", "Cura did not finish loading '{0}' within {1:.0f} s.".format(
+                    os.path.basename(path), load_timeout))
         sleep(settle)
         yield
 
@@ -110,7 +115,7 @@ SLICE_MAX_ATTEMPTS = 3
 SLICE_START_TIMEOUT_S = 120.0  # From forceSlice() until the engine reports progress.
 
 
-def run_slice(ops: Any, runner: MainThreadRunner, request: SceneRequest, matrix: Any, output_path: str,
+def run_slice(ops: Any, runner: MainThreadRunner, request: SceneRequest, matrices: Sequence[Any], output_path: str,
               log: LogFunction, on_progress: Callable[[float], None], is_cancelled: Callable[[], bool],
               slice_timeout: float = SLICE_TIMEOUT_S, poll: float = SLICE_POLL_S,
               clock: Callable[[], float] = time.monotonic, **kwargs: Any) -> Dict[str, Any]:
@@ -121,10 +126,12 @@ def run_slice(ops: Any, runner: MainThreadRunner, request: SceneRequest, matrix:
     sleep = kwargs.get("sleep", time.sleep)
     settle = kwargs.get("settle", SETTLE_S)
     with materialized(ops, runner, request, log, **kwargs):
-        placement = runner.run(ops.place, matrix)
+        # The job's matrices exactly as stored: nothing is re-arranged, so the G-code matches the job.
+        placement = runner.run(ops.place, list(matrices), "exact", [])
         if not placement["fits"]:
-            reasons = ", ".join(w["code"] for w in placement["warnings"]) or "not_printable"
-            raise ApiError(422, "does_not_fit", "The model does not fit on the build plate ({0}).".format(reasons))
+            codes = {w["code"] for item in placement["objects"] if not item["fits"] for w in item["warnings"]}
+            reasons = ", ".join(sorted(codes)) or "not_printable"
+            raise ApiError(422, "does_not_fit", "The models do not fit on the build plate ({0}).".format(reasons))
         sleep(settle)  # Scene changes stop an ongoing slice; let Cura's timers finish first.
 
         deadline = clock() + slice_timeout
@@ -199,16 +206,23 @@ def settings_diff(ops: Any, settings_ops: Any, runner: MainThreadRunner, printer
     return new_overrides, settings_schema.diff_states(before, after)
 
 
-def run_placement(ops: Any, runner: MainThreadRunner, request: SceneRequest, matrix: Any, log: LogFunction,
-                  auto_orient: bool = False, **kwargs: Any) -> Dict[str, Any]:
-    """Materialises the job and validates the placement of `matrix` (None = keep Cura's load placement).
+def run_placement(ops: Any, runner: MainThreadRunner, request: SceneRequest, matrices: Sequence[Any], log: LogFunction,
+                  auto_orient: Sequence[int] = (), arrange: str = "auto", moved: Sequence[int] = (),
+                  **kwargs: Any) -> Dict[str, Any]:
+    """Materialises the job and validates the placement of its objects.
 
-    With auto_orient, the orientation is computed from Cura's load placement instead (matrix is ignored).
+    matrices: one per object (None = keep Cura's load placement). The objects in `auto_orient`
+    (indices) get their orientation computed from Cura's load placement instead. `arrange` and
+    `moved` are explained in SceneOps.place.
     """
     with materialized(ops, runner, request, log, **kwargs):
+        matrices = list(matrices)
+        for index in auto_orient:
+            matrices[index] = None
         if auto_orient:
-            data = runner.run(ops.orientation_input)
+            runner.run(ops.place, matrices, "exact", [])  # Apply the matrices of the others first.
+        for index in auto_orient:
+            data = runner.run(ops.orientation_input, index)
             orientation = ops.compute_orientation(data["vertices"], data["min_volume"])  # Heavy: stays on this thread.
-            runner.run(ops.apply_orientation, orientation)
-            matrix = None
-        return runner.run(ops.place, matrix)
+            runner.run(ops.apply_orientation, index, orientation)
+        return runner.run(ops.place, [None] * len(matrices) if auto_orient else matrices, arrange, moved)
