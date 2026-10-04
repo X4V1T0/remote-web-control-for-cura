@@ -100,9 +100,13 @@ export const api = {
   jobs: () => request("GET", "/api/jobs"),
   job: (id) => request("GET", `/api/jobs/${id}`),
   deleteJob: (id) => request("DELETE", `/api/jobs/${id}`),
-  mesh: (id) => request("GET", `/api/jobs/${id}/mesh`, { as: "arrayBuffer" }),
-  transform: (id, matrix) => request("PUT", `/api/jobs/${id}/transform`, { json: { matrix } }),
-  autoOrient: (id) => request("POST", `/api/jobs/${id}/auto-orient`),
+  arrange: (id) => request("POST", `/api/jobs/${id}/arrange`),
+  autoOrientAll: (id) => request("POST", `/api/jobs/${id}/auto-orient`),
+  mesh: (id, objectId) => request("GET", `/api/jobs/${id}/objects/${objectId}/mesh`, { as: "arrayBuffer" }),
+  transform: (id, objectId, matrix) => request("PUT", `/api/jobs/${id}/objects/${objectId}/transform`, { json: { matrix } }),
+  autoOrient: (id, objectId) => request("POST", `/api/jobs/${id}/objects/${objectId}/auto-orient`),
+  duplicate: (id, objectId, count = 1) => request("POST", `/api/jobs/${id}/objects/${objectId}/duplicate`, { json: { count } }),
+  removeObject: (id, objectId) => request("DELETE", `/api/jobs/${id}/objects/${objectId}`),
   settings: (id, { visibility, lang, extruder }) =>
     request("GET", `/api/jobs/${id}/settings?visibility=${enc(visibility)}&lang=${enc(lang)}&extruder=${extruder}`),
   patchSetting: (id, change) => request("PATCH", `/api/jobs/${id}/settings`, { json: change }),
@@ -114,27 +118,30 @@ export const api = {
   // Sends the token when there is one: needed when the page is not opened on Cura's own PC (Docker).
   startPairing: () => request("POST", "/api/pairing/start"),
 
-  // XMLHttpRequest instead of fetch: fetch has no upload progress.
-  createJob(formData, onProgress) {
-    return new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", "/api/jobs");
-      for (const [name, value] of Object.entries(authHeaders())) xhr.setRequestHeader(name, value);
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable && onProgress) onProgress(event.loaded / event.total);
-      };
-      xhr.onload = () => {
-        let body = null;
-        try { body = JSON.parse(xhr.responseText); } catch { /* ignore */ }
-        if (xhr.status >= 200 && xhr.status < 300) return resolve(body);
-        const error = body && body.error
-          ? new ApiError(xhr.status, body.error.code, body.error.message)
-          : new ApiError(xhr.status, "http_" + xhr.status, "Error " + xhr.status);
-        if (xhr.status === 401) unauthorizedListeners.forEach((listener) => listener(error));
-        reject(error);
-      };
-      xhr.onerror = () => reject(new ApiError(0, "network", "Network error"));
-      xhr.send(formData);
-    });
-  },
+  createJob: (formData, onProgress) => upload("/api/jobs", formData, onProgress),
+  addObjects: (id, formData, onProgress) => upload(`/api/jobs/${id}/objects`, formData, onProgress),
 };
+
+// XMLHttpRequest instead of fetch: fetch has no upload progress.
+function upload(path, formData, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", path);
+    for (const [name, value] of Object.entries(authHeaders())) xhr.setRequestHeader(name, value);
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && onProgress) onProgress(event.loaded / event.total);
+    };
+    xhr.onload = () => {
+      let body = null;
+      try { body = JSON.parse(xhr.responseText); } catch { /* ignore */ }
+      if (xhr.status >= 200 && xhr.status < 300) return resolve(body);
+      const error = body && body.error
+        ? new ApiError(xhr.status, body.error.code, body.error.message)
+        : new ApiError(xhr.status, "http_" + xhr.status, "Error " + xhr.status);
+      if (xhr.status === 401) unauthorizedListeners.forEach((listener) => listener(error));
+      reject(error);
+    };
+    xhr.onerror = () => reject(new ApiError(0, "network", "Network error"));
+    xhr.send(formData);
+  });
+}

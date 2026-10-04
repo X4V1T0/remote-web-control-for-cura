@@ -1,15 +1,15 @@
 // Job page: Place (3D placement), Settings and Slice (slice + G-code).
 
 import { api, errorMessage, messageFor } from "../api.js";
-import { Viewer, multiply, rotationList } from "../viewer.js";
+import { Viewer, multiply, rotationList, translationList } from "../viewer.js";
 import {
-  curaLanguage, el, filenameFromDisposition, formatDuration, formatNumber, saveBlob, stateBadge, toast, warningLabel,
+  curaLanguage, el, filenameFromDisposition, formatDuration, formatNumber, jobTitle, saveBlob, stateBadge, toast, warningLabel,
 } from "../util.js";
 import { t } from "../i18n.js";
 
 const TABS = ["place", "settings", "slice"];
 const BUSY = new Set(["queued", "slicing"]);
-const meshCache = new Map(); // job id -> ArrayBuffer (survives tab changes)
+const meshCache = new Map(); // "job id/file id" -> ArrayBuffer (survives tab changes)
 
 export async function renderJob(view, [jobId, tab = "place"], context) {
   context.setBack("#/");
@@ -23,11 +23,12 @@ export async function renderJob(view, [jobId, tab = "place"], context) {
     return;
   }
   const printer = printers.find((p) => p.id === job.printer_id);
-  context.setTitle(job.name);
+  context.setTitle(jobTitle(job));
 
   const state = { job, printer, listeners: new Set() };
   state.update = (newJob) => {
     state.job = newJob;
+    context.setTitle(jobTitle(newJob));
     state.listeners.forEach((listener) => listener(newJob));
   };
 
@@ -81,12 +82,33 @@ function describeProfile(profile) {
 
 // ================================================================== Place
 
+const selectedObjects = new Map(); // job id -> selected object id (survives tab changes)
+
+// Copies share a name: number them so they can be told apart in the list.
+function objectLabels(objects) {
+  const totals = {};
+  objects.forEach((item) => { totals[item.name] = (totals[item.name] || 0) + 1; });
+  const seen = {};
+  return new Map(objects.map((item) => {
+    seen[item.name] = (seen[item.name] || 0) + 1;
+    return [item.id, totals[item.name] > 1 ? `${item.name} #${seen[item.name]}` : item.name];
+  }));
+}
+
+function boxSize(bbox) {
+  return bbox ? bbox.max.map((v, i) => formatNumber(v - bbox.min[i], 1)).join(" × ") + " mm" : "";
+}
+
 async function renderPlace(content, state) {
+  const jobId = state.job.id;
   const viewerBox = el("div", { class: "viewer" });
   const fitBadge = el("span", { class: "badge" });
   viewerBox.append(el("div", { class: "overlay" }, fitBadge));
   const info = el("div", { class: "stack small" });
+  const list = el("div", { class: "object-list" });
+  const objectInfo = el("div", { class: "stack small" });
   const busyNote = el("div", { class: "muted small", text: t("place.busy") });
+  const progress = el("div", { class: "progress hidden" }, el("div"));
   const buttons = [];
 
   function button(text, onclick, extra = {}) {
@@ -102,62 +124,120 @@ async function renderPlace(content, state) {
       button("↻ 90°", () => rotate(axis, -90), { "aria-label": t("place.rotate", { degrees: -90, axis: axis.toUpperCase() }) }));
   }
   const autoButton = button(t("place.auto_orient"), autoOrient);
+  const duplicateButton = button(t("place.duplicate"), duplicate);
+  const removeButton = button(t("place.remove"), removeSelected, { class: "small danger" });
   const resetViewButton = el("button", { class: "small", text: t("place.reset_view") });
 
+  // No "accept" filter: iOS does not know the .stl type and would grey the files out.
+  const fileInput = el("input", { type: "file", multiple: true, class: "hidden" });
+  const addButton = button(t("place.add"), () => fileInput.click());
+  const arrangeButton = button(t("place.arrange"), arrange);
+  fileInput.addEventListener("change", addFiles);
+
+  const objectsCard = el("div", { class: "card stack" },
+    el("h2", { class: "objects-title" }), list,
+    el("div", { class: "row wrap" }, addButton, arrangeButton), progress, fileInput);
   content.append(viewerBox,
     el("div", { class: "card stack" }, info),
-    el("div", { class: "card stack" }, grid, el("div", { class: "row" }, autoButton, el("span", { class: "grow" }), resetViewButton), busyNote));
+    objectsCard,
+    el("div", { class: "card stack" },
+      objectInfo, grid,
+      el("div", { class: "row wrap" }, autoButton, duplicateButton, removeButton, el("span", { class: "grow" }), resetViewButton),
+      busyNote));
 
   const viewer = new Viewer(viewerBox);
   resetViewButton.addEventListener("click", () => viewer.resetCamera());
+  viewer.onSelect = (id) => select(id);
   if (state.printer) viewer.setPrinter(state.printer);
 
   let working = false;
+  const selected = () => {
+    const objects = state.job.objects;
+    return objects.find((item) => item.id === selectedObjects.get(jobId)) || objects[0];
+  };
+
+  function select(id) {
+    selectedObjects.set(jobId, id);
+    refresh();
+  }
+
   function refresh() {
     const job = state.job;
+    const objects = job.objects;
+    const current = selected();
+    const several = objects.length > 1;
     const placement = job.placement || {};
     const busy = BUSY.has(job.state);
+    const labels = objectLabels(objects);
+
     buttons.forEach((b) => { b.disabled = working || busy; });
+    removeButton.classList.toggle("hidden", !several);
+    arrangeButton.classList.toggle("hidden", !several);
     busyNote.classList.toggle("hidden", !busy);
+
     fitBadge.textContent = placement.fits === false ? t("place.no_fit_badge") : t("place.fits_badge");
     fitBadge.className = "badge " + (placement.fits === false ? "error" : "ok");
-    const size = placement.bbox
-      ? placement.bbox.max.map((v, i) => formatNumber(v - placement.bbox.min[i], 1)).join(" × ") + " mm" : "";
-    const warnings = (placement.warnings || []).map((w) => el("li", { text: warningLabel(w) }));
-    info.replaceChildren(...[
-      el("div", { class: "row" },
-        el("span", { class: "grow fit " + (placement.fits === false ? "bad" : "ok"),
-          text: placement.fits === false ? t("place.no_fit") : t("place.fits") }),
-        el("span", { class: "muted", text: size })),
+    const fitText = several
+      ? (placement.fits === false ? t("place.some_no_fit") : t("place.all_fit", { n: objects.length }))
+      : (placement.fits === false ? t("place.no_fit") : t("place.fits"));
+    info.replaceChildren(el("div", { class: "row" },
+      el("span", { class: "grow fit " + (placement.fits === false ? "bad" : "ok"), text: fitText }),
+      el("span", { class: "muted", text: boxSize(placement.bbox) })));
+
+    objectsCard.querySelector(".objects-title").textContent = t("place.objects", { n: objects.length });
+    list.replaceChildren(...objects.map((item) => {
+      const fits = !item.placement || item.placement.fits !== false;
+      return el("button", {
+        type: "button", class: "object-row" + (item.id === current.id ? " selected" : ""),
+        "aria-pressed": item.id === current.id ? "true" : "false", onclick: () => select(item.id),
+      },
+      el("span", { class: "grow name", text: labels.get(item.id) }),
+      fits ? null : el("span", { class: "badge error", text: t("place.no_fit_badge") }),
+      el("span", { class: "muted small", text: boxSize(item.placement && item.placement.bbox) }));
+    }));
+
+    const warnings = ((current.placement && current.placement.warnings) || []).map((w) => el("li", { text: warningLabel(w) }));
+    objectInfo.replaceChildren(...[
+      several ? el("b", { text: labels.get(current.id) }) : null,
       warnings.length ? el("ul", { style: "margin: 0; padding-left: 18px" }, ...warnings) : null,
-      job.mesh && job.mesh.decimated ? el("div", { class: "muted", text: t("place.decimated", {
-        shown: formatNumber(job.mesh.preview_triangles, 0), total: formatNumber(job.mesh.triangles, 0) }) }) : null,
+      current.mesh.decimated ? el("div", { class: "muted", text: t("place.decimated", {
+        shown: formatNumber(current.mesh.preview_triangles, 0), total: formatNumber(current.mesh.triangles, 0) }) }) : null,
     ].filter(Boolean));
-    viewer.setPlacement(job.transform, placement.fits);
+
+    viewer.setObjects(objects.map((item) => ({
+      id: item.id, key: item.file, matrix: item.transform, fits: !item.placement || item.placement.fits !== false,
+    })));
+    viewer.setSelected(current.id);
+    loadMeshes();
   }
   state.listeners.add(refresh);
 
-  let buffer = meshCache.get(state.job.id);
-  try {
-    if (!buffer) {
-      buffer = await api.mesh(state.job.id);
-      meshCache.set(state.job.id, buffer);
+  // One download per file: copies share it. Cached across tab changes.
+  const loading = new Set();
+  async function loadMeshes() {
+    for (const item of state.job.objects) {
+      const key = `${jobId}/${item.file}`;
+      if (viewer.hasGeometry(item.file) || loading.has(key)) continue;
+      loading.add(key);
+      try {
+        if (!meshCache.has(key)) meshCache.set(key, await api.mesh(jobId, item.id));
+        viewer.addGeometry(item.file, meshCache.get(key));
+      } catch (e) {
+        toast(errorMessage(e), { error: true });
+      } finally {
+        loading.delete(key);
+      }
+      refresh();
     }
-    viewer.setMesh(buffer);
-  } catch (e) {
-    toast(errorMessage(e), { error: true });
   }
+
   refresh();
 
   async function apply(request) {
     working = true;
     refresh();
     try {
-      const placement = await request();
-      state.update({
-        ...state.job, transform: placement.matrix, state: "ready", result: null,
-        placement: { fits: placement.fits, bbox: placement.bbox, warnings: placement.warnings },
-      });
+      state.update(await request());
     } catch (e) {
       toast(errorMessage(e), { error: true, duration: 5000 });
     } finally {
@@ -166,14 +246,63 @@ async function renderPlace(content, state) {
     }
   }
 
+  // Around the model's own centre, so it does not swing across the plate; Cura then drops it
+  // onto the plate (and makes room for it if it now overlaps another model).
   function rotate(axis, degrees) {
-    const matrix = multiply(rotationList(axis, degrees), state.job.transform);
-    viewer.setPlacement(matrix, state.job.placement && state.job.placement.fits); // Immediate feedback.
-    apply(() => api.transform(state.job.id, matrix));
+    const item = selected();
+    const { min, max } = item.placement.bbox;
+    const [cx, cy, cz] = [0, 1, 2].map((i) => (min[i] + max[i]) / 2);
+    const matrix = multiply(translationList(cx, cy, cz),
+      multiply(rotationList(axis, degrees), multiply(translationList(-cx, -cy, -cz), item.transform)));
+    viewer.setObjectMatrix(item.id, matrix); // Immediate feedback.
+    apply(() => api.transform(jobId, item.id, matrix));
   }
 
   function autoOrient() {
-    apply(() => api.autoOrient(state.job.id));
+    apply(() => api.autoOrient(jobId, selected().id));
+  }
+
+  function duplicate() {
+    const before = new Set(state.job.objects.map((item) => item.id));
+    apply(async () => {
+      const job = await api.duplicate(jobId, selected().id);
+      const copy = job.objects.find((item) => !before.has(item.id));
+      if (copy) selectedObjects.set(jobId, copy.id);
+      return job;
+    });
+  }
+
+  function removeSelected() {
+    const item = selected();
+    if (!confirm(t("place.confirm_remove", { name: objectLabels(state.job.objects).get(item.id) }))) return;
+    apply(() => api.removeObject(jobId, item.id));
+  }
+
+  function arrange() {
+    apply(() => api.arrange(jobId));
+  }
+
+  async function addFiles() {
+    const files = [...fileInput.files];
+    fileInput.value = "";
+    if (!files.length) return;
+    if (files.some((file) => !/\.stl$/i.test(file.name))) {
+      toast(t("new.not_stl"), { error: true });
+      return;
+    }
+    const form = new FormData();
+    files.forEach((file) => form.append("file", file, file.name));
+    const bar = progress.firstChild;
+    bar.style.width = "0%";
+    progress.classList.remove("hidden");
+    const before = new Set(state.job.objects.map((item) => item.id));
+    await apply(async () => {
+      const job = await api.addObjects(jobId, form, (fraction) => { bar.style.width = Math.round(fraction * 100) + "%"; });
+      const added = job.objects.find((item) => !before.has(item.id));
+      if (added) selectedObjects.set(jobId, added.id);
+      return job;
+    });
+    progress.classList.add("hidden");
   }
 
   return () => viewer.dispose();

@@ -4,7 +4,7 @@ import os
 import pytest
 
 from RemoteWebControl.errors import ApiError
-from RemoteWebControl.jobs import JobStore, parse_profile, safe_filename, summary
+from RemoteWebControl.jobs import JobStore, NewFile, find_object, parse_profile, safe_filename, summary
 
 PROFILE = {"quality": "standard", "intent": "default", "quality_changes": None}
 MESH = {"triangles": 12, "preview_triangles": 12, "decimated": False, "bbox": {"min": [0, 0, 0], "max": [1, 1, 1]}}
@@ -28,22 +28,53 @@ def store(tmp_path, clock):
     return JobStore(str(tmp_path / "jobs"), clock = clock)
 
 
+def new_file(name = "pieza.stl", data = b"solid x"):
+    return NewFile(data, name, MESH, b"CRM1")
+
+
 def create(store, name = "pieza.stl"):
-    return store.create(b"solid x", name, "Printer #2", PROFILE, MESH, b"CRM1")
+    return store.create([new_file(name)], "Printer #2", PROFILE)
 
 
 def test_create_persists_files_and_document(store):
-    job = create(store, "Soporte móvil v2.stl")
+    job = store.create([new_file("Soporte móvil v2.stl"), new_file("CON", b"solid y")], "Printer #2", PROFILE)
     directory = store.job_dir(job["id"])
-    assert sorted(os.listdir(directory)) == ["job.json", "load", "model.stl", "preview.bin"]
-    assert os.listdir(os.path.join(directory, "load")) == ["Soporte móvil v2.stl"]
-    with open(store.load_path(job), "rb") as f:
-        assert f.read() == b"solid x"
+    assert sorted(os.listdir(directory)) == ["files", "job.json"]
+    first, second = job["objects"]
+    assert (first["name"], second["name"]) == ("Soporte móvil v2.stl", "model.stl")
+    file_dir = store.file_dir(job["id"], first["file"])
+    assert sorted(os.listdir(file_dir)) == ["load", "model.stl", "preview.bin"]
+    assert os.listdir(os.path.join(file_dir, "load")) == ["Soporte móvil v2.stl"]
+    with open(store.load_path(job["id"], second), "rb") as f:
+        assert f.read() == b"solid y"
+    with open(store.preview_path(job["id"], first), "rb") as f:
+        assert f.read() == b"CRM1"
     assert store.get(job["id"]) == job
+    assert job["name"] == "Soporte móvil v2.stl"
     assert job["state"] == "created"
     assert job["created_at"] == "2027-01-15T08:00:00Z"
     assert job["overrides"] == {"global": {}, "extruders": {}}
-    assert job["transform"] is None
+    assert first["transform"] is None and first["mesh"] == MESH
+    assert find_object(job, second["id"]) is second
+    with pytest.raises(ApiError) as info:
+        find_object(job, "0" * 12)
+    assert (info.value.status, info.value.code) == (404, "object_not_found")
+
+
+def test_files_can_be_added_and_unused_ones_removed(store):
+    job = create(store)
+    [extra] = store.write_files(job["id"], [new_file("otra.stl")])
+    [pending] = store.write_files(job["id"], [new_file("otra.stl")])  # Another request, still being placed.
+    assert len(os.listdir(os.path.join(store.job_dir(job["id"]), "files"))) == 3
+    store.remove_unused_files(job["id"], [extra["file"], job["objects"][0]["file"]])  # The job's own file is in use.
+    assert sorted(os.listdir(os.path.join(store.job_dir(job["id"]), "files"))) == sorted([job["objects"][0]["file"], pending["file"]])
+
+
+def test_a_job_needs_files(store):
+    with pytest.raises(ApiError) as info:
+        store.create([], "Printer #2", PROFILE)
+    assert info.value.code == "missing_file"
+    assert store.list() == []
 
 
 def test_list_is_newest_first_and_summary(store, clock):
@@ -51,7 +82,8 @@ def test_list_is_newest_first_and_summary(store, clock):
     clock.now += 60
     second = create(store)
     assert [j["id"] for j in store.list()] == [second["id"], first["id"]]
-    assert set(summary(first)) == {"id", "name", "created_at", "updated_at", "printer_id", "state", "progress", "error"}
+    assert set(summary(first)) == {"id", "name", "created_at", "updated_at", "printer_id", "state", "progress", "error", "objects"}
+    assert summary(first)["objects"] == 1
 
 
 def test_update_and_delete(store, clock):

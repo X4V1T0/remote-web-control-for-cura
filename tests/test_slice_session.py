@@ -10,7 +10,7 @@ from RemoteWebControl.main_thread import MainThreadRunner
 from RemoteWebControl.scene_worker import PRIORITY_SLICE, SceneWorker
 from RemoteWebControl.session import SceneRequest, SliceCancelled, run_slice
 
-REQUEST = SceneRequest("Printer", {"quality": "standard", "intent": "default", "quality_changes": None}, "C:/x/pieza.stl")
+REQUEST = SceneRequest("Printer", {"quality": "standard", "intent": "default", "quality_changes": None}, ["C:/x/pieza.stl"])
 
 
 class Waiter:
@@ -38,14 +38,16 @@ class SliceOps:
     def apply_overrides(self, overrides):
         self.calls.append("apply_overrides")
 
-    def start_load(self, path):
+    def start_load(self, path, first):
         self.calls.append("start_load")
         return Waiter()
 
-    def place(self, matrix):
+    def place(self, matrices, arrange, moved):
+        assert (arrange, moved) == ("exact", [])  # Slicing never re-arranges the job.
         self.calls.append("place")
         warnings = [] if self.fits else [{"code": "outside_build_volume", "message": "x"}]
-        return {"matrix": "M", "fits": self.fits, "bbox": {}, "warnings": warnings}
+        placed = {"matrix": "M", "fits": self.fits, "bbox": {}, "warnings": warnings}
+        return {"objects": [placed for _ in matrices], "fits": self.fits, "bbox": {}}
 
     def start_slice(self):
         self.calls.append("start_slice")
@@ -73,7 +75,7 @@ def direct_runner():
 
 
 def slice_run(ops, cancelled = lambda: False, progress = None, **kwargs):
-    return run_slice(ops, direct_runner(), REQUEST, "M", "out.gcode", lambda *a: None,
+    return run_slice(ops, direct_runner(), REQUEST, ["M"], "out.gcode", lambda *a: None,
                      progress.append if progress is not None else (lambda p: None), cancelled,
                      sleep = lambda s: None, poll = 0, settle = 0, **kwargs)
 
@@ -83,7 +85,7 @@ def test_slice_success():
     ops = SliceOps([["waiting", "processing", "processing", "done"]])
     outcome = slice_run(ops, progress = progress)
     assert outcome["result"] == {"print_time_s": 60, "material": [], "fits": True}
-    assert outcome["placement"]["matrix"] == "M"
+    assert outcome["placement"]["objects"][0]["matrix"] == "M"
     assert ops.calls == ["prepare", "activate", "apply_overrides", "start_load", "place",
                          "start_slice", "finish_slice", "restore"]
     assert progress == [0.5, 0.5]

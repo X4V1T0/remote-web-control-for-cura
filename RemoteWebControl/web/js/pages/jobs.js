@@ -1,7 +1,7 @@
 // Job list. Refreshes itself while any job is queued or slicing.
 
 import { api, errorMessage, messageFor } from "../api.js";
-import { el, formatDate, stateBadge } from "../util.js";
+import { el, formatDate, jobTitle, stateBadge } from "../util.js";
 import { t } from "../i18n.js";
 
 export async function renderJobs(view, _params, context) {
@@ -48,7 +48,7 @@ function jobItem(job) {
   const busy = job.state === "queued" || job.state === "slicing";
   return el("a", { class: "card job-item", href: `#/job/${job.id}` },
     el("div", { class: "row" },
-      el("div", { class: "grow name", text: job.name }),
+      el("div", { class: "grow name", text: jobTitle(job) }),
       stateBadge(job.state)),
     el("div", { class: "muted small", text: `${job.printer_id} · ${formatDate(job.created_at)}` }),
     busy ? el("div", { class: "progress", style: "margin-top: 8px" },

@@ -60,14 +60,31 @@ def build_router(service: Any, runner: MainThreadRunner, jobs: JobService, pairi
         jobs.delete(request.path_params["job_id"])
         return Response(204, b"", "")
 
-    def job_mesh(request: Request) -> Response:
-        return Response(200, jobs.mesh(request.path_params["job_id"]), "application/octet-stream", compressible = True)
-
-    def job_transform(request: Request) -> Response:
-        return Response.json(jobs.set_transform(request.path_params["job_id"], request.json()))
-
     def job_auto_orient(request: Request) -> Response:
         return Response.json(jobs.auto_orient(request.path_params["job_id"]))
+
+    def job_arrange(request: Request) -> Response:
+        return Response.json(jobs.arrange(request.path_params["job_id"]))
+
+    def add_objects(request: Request) -> Response:
+        return Response.json(jobs.add_objects(request.path_params["job_id"], request.headers.get("Content-Type", ""), request.body))
+
+    def object_mesh(request: Request) -> Response:
+        data = jobs.mesh(request.path_params["job_id"], request.path_params["object_id"])
+        return Response(200, data, "application/octet-stream", compressible = True)
+
+    def object_transform(request: Request) -> Response:
+        return Response.json(jobs.set_transform(request.path_params["job_id"], request.path_params["object_id"], request.json()))
+
+    def object_auto_orient(request: Request) -> Response:
+        return Response.json(jobs.auto_orient(request.path_params["job_id"], request.path_params["object_id"]))
+
+    def object_duplicate(request: Request) -> Response:
+        payload = request.json() if request.body.strip() else None
+        return Response.json(jobs.duplicate_object(request.path_params["job_id"], request.path_params["object_id"], payload))
+
+    def object_delete(request: Request) -> Response:
+        return Response.json(jobs.remove_object(request.path_params["job_id"], request.path_params["object_id"]))
 
     def job_slice(request: Request) -> Response:
         return Response.json(jobs.slice(request.path_params["job_id"]), status = 202)
@@ -105,9 +122,14 @@ def build_router(service: Any, runner: MainThreadRunner, jobs: JobService, pairi
     router.add("GET", "/api/jobs", list_jobs)
     router.add("GET", "/api/jobs/{job_id}", get_job)
     router.add("DELETE", "/api/jobs/{job_id}", delete_job)
-    router.add("GET", "/api/jobs/{job_id}/mesh", job_mesh)
-    router.add("PUT", "/api/jobs/{job_id}/transform", job_transform)
     router.add("POST", "/api/jobs/{job_id}/auto-orient", job_auto_orient)
+    router.add("POST", "/api/jobs/{job_id}/arrange", job_arrange)
+    router.add("POST", "/api/jobs/{job_id}/objects", add_objects)
+    router.add("DELETE", "/api/jobs/{job_id}/objects/{object_id}", object_delete)
+    router.add("GET", "/api/jobs/{job_id}/objects/{object_id}/mesh", object_mesh)
+    router.add("PUT", "/api/jobs/{job_id}/objects/{object_id}/transform", object_transform)
+    router.add("POST", "/api/jobs/{job_id}/objects/{object_id}/auto-orient", object_auto_orient)
+    router.add("POST", "/api/jobs/{job_id}/objects/{object_id}/duplicate", object_duplicate)
     router.add("POST", "/api/jobs/{job_id}/slice", job_slice)
     router.add("POST", "/api/jobs/{job_id}/cancel", job_cancel)
     router.add("GET", "/api/jobs/{job_id}/gcode", job_gcode)

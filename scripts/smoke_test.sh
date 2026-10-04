@@ -18,9 +18,9 @@
 #
 # Only needs bash + curl (Git Bash on Windows is fine).
 #
-# Covers: health -> printers -> profiles -> upload STL -> mesh -> rotate 90 deg in X -> auto-orient
-#         -> settings -> change infill_sparse_density -> slice -> wait -> download G-code (checking
-#         the setting) -> list -> delete.
+# Covers: health -> printers -> profiles -> upload two STLs -> mesh -> rotate one 90 deg in X
+#         -> duplicate -> remove the copy -> arrange -> auto-orient -> settings -> change
+#         infill_sparse_density -> slice -> wait -> download G-code (checking the setting) -> list -> delete.
 
 set -euo pipefail
 
@@ -99,28 +99,44 @@ step "GET /api/printers/{id}/profiles"
 api GET "/api/printers/$(printf '%s' "$PRINTER_ID" | sed -e 's/%/%25/g' -e 's/ /%20/g' -e 's/#/%23/g')/profiles"
 
 STL="${STL:-$(dirname "$0")/../samples/l_bracket.stl}"
-step "POST /api/jobs ($STL, printer's current profile)"
-job="$(api POST /api/jobs -F "file=@$STL" -F "printer_id=$PRINTER_ID")"
-echo "$job"
+step "POST /api/jobs (two copies of $STL, printer's current profile)"
+job="$(api POST /api/jobs -F "file=@$STL" -F "file=@$STL" -F "printer_id=$PRINTER_ID")"
+echo "$job" | cut -c1-600
 JOB_ID="$(printf '%s' "$job" | grep -o '"id": "[0-9a-f]\{32\}"' | head -1 | sed 's/"id": "\(.*\)"/\1/')"
 [[ -n "$JOB_ID" ]] || { echo "No job id in the response" >&2; exit 1; }
-echo "Job: $JOB_ID"
+object_ids() { printf '%s' "$1" | grep -o '"id": "[0-9a-f]\{12\}"' | sed 's/"id": "\(.*\)"/\1/'; }
+job_fits() { printf '%s' "$1" | grep -o '"placement": {"fits": [a-z]*' | tail -1 | grep -o '[a-z]*$'; }  # The job's, after the objects'.
+OBJECTS=($(object_ids "$job"))
+[[ ${#OBJECTS[@]} == 2 ]] || { echo "Expected 2 objects, got ${#OBJECTS[@]}" >&2; exit 1; }
+echo "Job: $JOB_ID, objects: ${OBJECTS[*]}, fits: $(job_fits "$job")"
 
-step "GET /api/jobs/{id}/mesh (binary CRM1)"
+step "GET /api/jobs/{id}/objects/{object}/mesh (binary CRM1)"
 MESH_OUT="${TMPDIR:-/tmp}/rwc_smoke.mesh"
-curl -sS --compressed -f -H "Authorization: Bearer $RWC_TOKEN" -o "$MESH_OUT" "$URL/api/jobs/$JOB_ID/mesh"
+curl -sS --compressed -f -H "Authorization: Bearer $RWC_TOKEN" -o "$MESH_OUT" "$URL/api/jobs/$JOB_ID/objects/${OBJECTS[0]}/mesh"
 magic="$(head -c 4 "$MESH_OUT")"
 rm -f "$MESH_OUT"
 [[ "$magic" == "CRM1" ]] || { echo "Unexpected mesh magic: $magic" >&2; exit 1; }
 echo "OK (CRM1)"
 
-step "PUT /api/jobs/{id}/transform (rotate 90 deg around X)"
-placement="$(api PUT "/api/jobs/$JOB_ID/transform" -H "Content-Type: application/json" \
+step "PUT /api/jobs/{id}/objects/{object}/transform (rotate the second one 90 deg around X)"
+job="$(api PUT "/api/jobs/$JOB_ID/objects/${OBJECTS[1]}/transform" -H "Content-Type: application/json" \
     -d '{"matrix": [1,0,0,0, 0,0,-1,0, 0,1,0,0, 0,0,0,1]}')"
-echo "$placement"
-printf '%s' "$placement" | grep -q '"fits": true' || echo "WARNING: the model does not fit (see warnings)"
+echo "fits: $(job_fits "$job")"
+[[ "$(job_fits "$job")" == "true" ]] || echo "WARNING: the models do not fit (see warnings)"
 
-step "POST /api/jobs/{id}/auto-orient"
+step "POST /api/jobs/{id}/objects/{object}/duplicate, then DELETE the copy"
+job="$(api POST "/api/jobs/$JOB_ID/objects/${OBJECTS[0]}/duplicate" -H "Content-Type: application/json" -d '{"count": 1}')"
+ALL=($(object_ids "$job"))
+[[ ${#ALL[@]} == 3 ]] || { echo "Expected 3 objects after duplicating, got ${#ALL[@]}" >&2; exit 1; }
+job="$(api DELETE "/api/jobs/$JOB_ID/objects/${ALL[2]}")"
+[[ "$(object_ids "$job" | wc -l)" == 2 ]] || { echo "The copy was not removed" >&2; exit 1; }
+echo "OK (3 objects, then 2)"
+
+step "POST /api/jobs/{id}/arrange"
+job="$(api POST "/api/jobs/$JOB_ID/arrange")"
+echo "fits: $(job_fits "$job")"
+
+step "POST /api/jobs/{id}/auto-orient (every object)"
 auto_status="$(curl -sS -o "${TMPDIR:-/tmp}/rwc_auto.json" -w '%{http_code}' -X POST \
     -H "Authorization: Bearer $RWC_TOKEN" "$URL/api/jobs/$JOB_ID/auto-orient")"
 cat "${TMPDIR:-/tmp}/rwc_auto.json"; echo

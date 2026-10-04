@@ -2,11 +2,12 @@
 
 Cura is reached through injected callables:
     resolve_profile(printer_id, profile_or_None) -> profile                  (main thread)
-    place(SceneRequest, matrix_or_None, auto_orient) -> placement dict        (scene worker)
+    place(SceneRequest, matrices, auto_orient_indices, arrange, moved_indices) -> placement dict
+                                                                             (scene worker)
     read_settings(printer_id, profile, overrides, visibility, language, extruder) -> tree   (scene worker)
     settings_diff(printer_id, profile, overrides, scope, extruder, key, value)
         -> (new overrides, changes)                                          (scene worker)
-    slice(SceneRequest, matrix, output_path, on_progress, is_cancelled)
+    slice(SceneRequest, matrices, output_path, on_progress, is_cancelled)
         -> {"placement": ..., "result": ...}                                  (scene worker)
 """
 
@@ -20,9 +21,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import coords, decimate, mesh_format, settings_schema
 from .errors import ApiError
-from .jobs import BUSY_STATES, JobStore, parse_profile, summary
+from .jobs import BUSY_STATES, MAX_OBJECTS, JobStore, NewFile, find_object, new_object, parse_profile, summary
 from .main_thread import MainThreadRunner
-from .multipart import parse_form_data
+from .multipart import parse_form_parts
 from .scene_worker import PRIORITY_SLICE, SceneWorker
 from .session import SceneRequest, SliceCancelled
 from .stl import read_stl
@@ -38,7 +39,7 @@ LogFunction = Callable[[str, str], None]
 class JobService:
     def __init__(self, store: JobStore, worker: SceneWorker, runner: MainThreadRunner,
                  resolve_profile: Callable[[str, Optional[Dict[str, Optional[str]]]], Dict[str, Optional[str]]],
-                 place: Callable[[SceneRequest, Any, bool], Dict[str, Any]],
+                 place: Callable[..., Dict[str, Any]],
                  slice: Optional[Callable[..., Dict[str, Any]]] = None,
                  read_settings: Optional[Callable[..., List[Dict[str, Any]]]] = None,
                  settings_diff: Optional[Callable[..., Tuple[Dict[str, Any], List[Dict[str, Any]]]]] = None,
@@ -60,10 +61,8 @@ class JobService:
     # ------------------------------------------------------------------ create
 
     def create(self, content_type: str, body: bytes) -> Dict[str, Any]:
-        form = parse_form_data(content_type, body)
-        upload = form.get("file")
-        if upload is None or not upload.data:
-            raise ApiError(400, "missing_file", "The form needs a 'file' field with an STL file.")
+        parts = parse_form_parts(content_type, body)
+        form = {part.name: part for part in parts}
         printer_field = form.get("printer_id")
         printer_id = printer_field.text().strip() if printer_field is not None else ""
         if not printer_id:
@@ -71,26 +70,37 @@ class JobService:
         profile_field = form.get("profile")
         profile = parse_profile(profile_field.text()) if profile_field is not None and profile_field.data.strip() else None
         auto_orient = _parse_bool(form["auto_orient"].text(), "auto_orient") if "auto_orient" in form else False
-
-        triangles = read_stl(upload.data)
-        preview = decimate.decimate(triangles, self._max_preview_tris)
-        decimated = len(preview) < len(triangles)
-        mesh_info = {
-            "triangles": int(len(triangles)),
-            "preview_triangles": int(len(preview)),
-            "decimated": decimated,
-            "bbox": coords.points_bbox(triangles),
-        }
+        files = self._read_files(parts)
+        _check_object_count(len(files))
 
         profile = self._runner.run(self._resolve_profile, printer_id, profile)
-        job = self._store.create(upload.data, upload.filename, printer_id, profile, mesh_info,
-                                 mesh_format.encode(preview, decimated))
+        job = self._store.create(files, printer_id, profile)
+        ids = [item["id"] for item in job["objects"]]
         try:
-            placement = self._worker.call(self._place, self._scene_request(job), None, auto_orient)
+            return self._replan(job["id"], lambda j: j["objects"],
+                                     ids if auto_orient else (), "auto", ids)
         except BaseException:
             self._store.delete(job["id"])
             raise
-        return self._store.update(job["id"], lambda j: _apply_placement(j, placement))
+
+    def _read_files(self, parts: List[Any]) -> List[NewFile]:
+        """Validates every uploaded STL ("file" fields; there may be several) and builds its preview."""
+        uploads = [part for part in parts if part.name == "file" and part.data]
+        if not uploads:
+            raise ApiError(400, "missing_file", "The form needs at least one 'file' field with an STL file.")
+        files = []
+        for upload in uploads:
+            triangles = read_stl(upload.data)
+            preview = decimate.decimate(triangles, self._max_preview_tris)
+            decimated = len(preview) < len(triangles)
+            mesh_info = {
+                "triangles": int(len(triangles)),
+                "preview_triangles": int(len(preview)),
+                "decimated": decimated,
+                "bbox": coords.points_bbox(triangles),
+            }
+            files.append(NewFile(upload.data, upload.filename, mesh_info, mesh_format.encode(preview, decimated)))
+        return files
 
     # ------------------------------------------------------------------ queries
 
@@ -103,33 +113,126 @@ class JobService:
     def delete(self, job_id: str) -> None:
         self._store.delete(job_id)
 
-    def mesh(self, job_id: str) -> bytes:
-        self._store.get(job_id)  # 404 if missing.
-        with open(self._store.path(job_id, "preview.bin"), "rb") as f:
+    def mesh(self, job_id: str, object_id: str) -> bytes:
+        item = find_object(self._store.get(job_id), object_id)
+        with open(self._store.preview_path(job_id, item), "rb") as f:
             return f.read()
 
-    # ------------------------------------------------------------------ transform
+    # ------------------------------------------------------------------ objects
 
-    def set_transform(self, job_id: str, payload: Any) -> Dict[str, Any]:
+    def add_objects(self, job_id: str, content_type: str, body: bytes) -> Dict[str, Any]:
+        """More STL files on the same build plate. Cura places them around the others."""
+        _ensure_not_busy(self._store.get(job_id))
+        parts = parse_form_parts(content_type, body)
+        form = {part.name: part for part in parts}
+        auto_orient = _parse_bool(form["auto_orient"].text(), "auto_orient") if "auto_orient" in form else False
+        files = self._read_files(parts)
+        new_objects = self._store.write_files(job_id, files)
+        ids = [item["id"] for item in new_objects]
+        try:
+            return self._replan(job_id, lambda j: j["objects"] + new_objects,
+                                     ids if auto_orient else (), "auto", ids)
+        finally:
+            self._store.remove_unused_files(job_id, [item["file"] for item in new_objects])  # If they could not be added.
+
+    def duplicate_object(self, job_id: str, object_id: str, payload: Any) -> Dict[str, Any]:
+        """Copies of an object, with its orientation, placed around the others."""
+        count = 1
+        if payload is not None:
+            if not isinstance(payload, dict) or not set(payload) <= {"count"}:
+                raise ApiError(400, "invalid_request", "Body must be empty or {\"count\": n}.")
+            count = payload.get("count", 1)
+            if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= MAX_OBJECTS:
+                raise ApiError(400, "invalid_request", "count must be an integer from 1 to {0}.".format(MAX_OBJECTS))
+        copies = []  # type: List[Dict[str, Any]]
+
+        def edit(job: Dict[str, Any]) -> List[Dict[str, Any]]:
+            source = find_object(job, object_id)
+            copies.extend(new_object(source["file"], source["name"], source["mesh"], source["transform"]) for _ in range(count))
+            return job["objects"] + copies
+
+        return self._replan(job_id, edit, (), "auto", lambda: [item["id"] for item in copies])
+
+    def remove_object(self, job_id: str, object_id: str) -> Dict[str, Any]:
+        removed = []  # type: List[str]
+
+        def edit(job: Dict[str, Any]) -> List[Dict[str, Any]]:
+            removed.append(find_object(job, object_id)["file"])
+            remaining = [item for item in job["objects"] if item["id"] != object_id]
+            if not remaining:
+                raise ApiError(409, "last_object", "A job needs at least one object; delete the job instead.")
+            return remaining
+
+        job = self._replan(job_id, edit, (), "auto", ())
+        self._store.remove_unused_files(job_id, removed)  # Unless copies of it remain.
+        return job
+
+    def set_transform(self, job_id: str, object_id: str, payload: Any) -> Dict[str, Any]:
         if not isinstance(payload, dict) or "matrix" not in payload:
             raise ApiError(400, "invalid_matrix", "Body must be {\"matrix\": [16 numbers]}.")
-        return self._replace(job_id, coords.matrix_from_list(payload["matrix"]), auto_orient = False)
+        matrix = coords.matrix_to_list(coords.matrix_from_list(payload["matrix"]))
 
-    def auto_orient(self, job_id: str) -> Dict[str, Any]:
-        return self._replace(job_id, None, auto_orient = True)
+        def edit(job: Dict[str, Any]) -> List[Dict[str, Any]]:
+            find_object(job, object_id)["transform"] = matrix
+            return job["objects"]
 
-    def _replace(self, job_id: str, matrix: Any, auto_orient: bool) -> Dict[str, Any]:
+        return self._replan(job_id, edit, (), "auto", [object_id])
+
+    def auto_orient(self, job_id: str, object_id: Optional[str] = None) -> Dict[str, Any]:
+        """One object, or all of them (object_id None)."""
+        def edit(job: Dict[str, Any]) -> List[Dict[str, Any]]:
+            if object_id is not None:
+                find_object(job, object_id)
+            return job["objects"]
+
+        def targets() -> List[str]:
+            return [object_id] if object_id is not None else [item["id"] for item in self._store.get(job_id)["objects"]]
+
+        return self._replan(job_id, edit, targets, "auto", targets)
+
+    def arrange(self, job_id: str) -> Dict[str, Any]:
+        """Re-arranges every object, like "Arrange All" in the GUI."""
+        return self._replan(job_id, lambda j: j["objects"], (), "all", ())
+
+    def _replan(self, job_id: str, edit: Callable[[Dict[str, Any]], List[Dict[str, Any]]],
+                auto_orient: Any, arrange: str, moved: Any) -> Dict[str, Any]:
+        # Answer at once if the job is busy: the scene worker may be slicing it for minutes.
+        _ensure_not_busy(self._store.get(job_id))
+        return self._worker.call(self._place_objects, job_id, edit, auto_orient, arrange, moved)
+
+    def _place_objects(self, job_id: str, edit: Callable[[Dict[str, Any]], List[Dict[str, Any]]],
+                       auto_orient: Any, arrange: str, moved: Any) -> Dict[str, Any]:
+        """Scene worker task, so changes to the objects of a job never interleave: builds the new
+        object list with `edit`, has Cura place it and saves the effective matrices.
+
+        auto_orient and moved are object ids (or a callable returning them, evaluated after `edit`).
+        """
         job = self._store.get(job_id)
         _ensure_not_busy(job)
-        placement = self._worker.call(self._place, self._scene_request(job), matrix, auto_orient)
+        objects = edit(job)
+        _check_object_count(len(objects))
+        orient_ids = set(auto_orient() if callable(auto_orient) else auto_orient)
+        moved_ids = set(moved() if callable(moved) else moved)
+        matrices = [None if item["transform"] is None else coords.matrix_from_list(item["transform"]) for item in objects]
+        request = SceneRequest(job["printer_id"], job["profile"], [self._store.load_path(job_id, item) for item in objects],
+                               job["overrides"])
+        placement = self._place(request, matrices,
+                                [i for i, item in enumerate(objects) if item["id"] in orient_ids], arrange,
+                                [i for i, item in enumerate(objects) if item["id"] in moved_ids])
 
         def change(j: Dict[str, Any]) -> None:
-            _ensure_not_busy(j)  # Could have been queued while we were placing.
-            _apply_placement(j, placement)
+            _ensure_not_busy(j)  # Could have been queued while Cura was placing.
+            for item, placed in zip(objects, placement["objects"]):
+                item["transform"] = placed["matrix"]
+                item["placement"] = {key: placed[key] for key in ("fits", "bbox", "warnings")}
+            j["objects"] = objects
+            j["name"] = objects[0]["name"]
+            j["placement"] = {"fits": placement["fits"], "bbox": placement["bbox"]}
+            j.update(state = "ready", progress = 0.0, error = None, result = None)  # A new placement makes a slice stale.
 
-        self._store.update(job_id, change)
+        job = self._store.update(job_id, change)
         self._remove_output(job_id)
-        return placement
+        return job
 
     # ------------------------------------------------------------------ slice
 
@@ -140,8 +243,13 @@ class JobService:
 
         def change(job: Dict[str, Any]) -> None:
             _ensure_not_busy(job)
-            if job.get("transform") is None:
+            if not job["objects"] or any(item["transform"] is None for item in job["objects"]):
                 raise ApiError(409, "job_not_ready", "The job has no placement yet.")
+            if job["placement"] and job["placement"]["fits"] is False:  # Known already: no need to load it in Cura.
+                codes = {w["code"] for item in job["objects"] if item["placement"] and not item["placement"]["fits"]
+                         for w in item["placement"]["warnings"]}
+                raise ApiError(422, "does_not_fit", "The models do not fit on the build plate ({0}).".format(
+                    ", ".join(sorted(codes)) or "not_printable"))
             job.update(state = "queued", progress = 0.0, error = None, result = None)
 
         job = self._store.update(job_id, change)
@@ -179,8 +287,8 @@ class JobService:
         progress_writer = _ProgressWriter(self._store, job_id)
         partial = self._store.path(job_id, GCODE + ".part")
         try:
-            matrix = coords.matrix_from_list(job["transform"])
-            outcome = self._slice(self._scene_request(job), matrix, partial, progress_writer, lambda: self._is_cancelled(job_id))
+            matrices = [coords.matrix_from_list(item["transform"]) for item in job["objects"]]
+            outcome = self._slice(self._scene_request(job), matrices, partial, progress_writer, lambda: self._is_cancelled(job_id))
             os.replace(partial, self._store.path(job_id, GCODE))
             self._write_gzip_copy(job_id)
         except SliceCancelled:
@@ -195,7 +303,7 @@ class JobService:
             gcode_size = os.path.getsize(self._store.path(job_id, GCODE))
 
             def done(j: Dict[str, Any]) -> None:
-                j["placement"] = {key: outcome["placement"][key] for key in ("fits", "bbox", "warnings")}
+                j["placement"] = {key: outcome["placement"][key] for key in ("fits", "bbox")}
                 j["result"] = dict(outcome["result"], gcode_bytes = gcode_size)
                 j.update(state = "done", progress = 1.0, error = None)
             self._store.update(job_id, done)
@@ -265,7 +373,8 @@ class JobService:
     # ------------------------------------------------------------------ helpers
 
     def _scene_request(self, job: Dict[str, Any]) -> SceneRequest:
-        return SceneRequest(job["printer_id"], job["profile"], self._store.load_path(job), job["overrides"])
+        return SceneRequest(job["printer_id"], job["profile"], [self._store.load_path(job["id"], item) for item in job["objects"]],
+                            job["overrides"])
 
     def _remove_output(self, job_id: str) -> None:
         for name in (GCODE, GCODE_GZ):
@@ -316,11 +425,6 @@ def _ensure_not_busy(job: Dict[str, Any]) -> None:
         raise ApiError(409, "job_busy", "The job is {0}; wait until it finishes.".format(job["state"]))
 
 
-def _apply_placement(job: Dict[str, Any], placement: Dict[str, Any]) -> None:
-    """A new placement makes any previous slice result stale."""
-    job["transform"] = placement["matrix"]
-    job["placement"] = {key: placement[key] for key in ("fits", "bbox", "warnings")}
-    job["state"] = "ready"
-    job["progress"] = 0.0
-    job["error"] = None
-    job["result"] = None
+def _check_object_count(count: int) -> None:
+    if count > MAX_OBJECTS:
+        raise ApiError(422, "too_many_objects", "A job can have at most {0} objects.".format(MAX_OBJECTS))

@@ -337,3 +337,18 @@ details.category > .settings { padding: 0 14px 8px; }
   box-shadow: 0 8px 30px var(--shadow);
 }
 #toast.error { border-color: var(--error); }
+
+/* ------------------------------------------------------------------ models of a job */
+
+.object-list { display: flex; flex-direction: column; gap: 6px; }
+.object-row {
+  justify-content: flex-start;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 12px;
+  font-weight: 500;
+  text-align: left;
+  background: var(--bg);
+}
+.object-row .name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.object-row.selected { border-color: var(--accent); background: var(--panel-2); }

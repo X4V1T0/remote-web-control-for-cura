@@ -1,4 +1,4 @@
-// 3D preview: build volume + model. Printer coordinates everywhere (Z up, mm, origin at the
+// 3D preview: build volume + the job's models. Printer coordinates everywhere (Z up, mm, origin at the
 // centre of the build plate), exactly like the API, so job matrices are applied as they are.
 
 import * as THREE from "three";
@@ -10,10 +10,12 @@ const PALETTES = {
   dark: {
     background: 0x11141a, plate: 0x2b3242, grid: 0x394155, edges: 0x6b7489,
     disallowed: 0x7a2f35, disallowedOpacity: 0.7, marker: 0x9aa3b5, model: 0xff8a26, modelBad: 0xff5d5d,
+    selection: 0xffffff,
   },
   light: {
     background: 0xfafafa, plate: 0xe4e4e4, grid: 0xc0c1c2, edges: 0x3282ff,
     disallowed: 0x000000, disallowedOpacity: 0.16, marker: 0x6c6c6c, model: 0xffc924, modelBad: 0xda1e28,
+    selection: 0x196ef0, // Cura's selection outline.
   },
 };
 
@@ -55,8 +57,8 @@ export class Viewer {
       edges: new THREE.LineBasicMaterial(),
       disallowed: new THREE.MeshBasicMaterial({ transparent: true }),
       marker: new THREE.MeshBasicMaterial(),
+      selection: new THREE.LineBasicMaterial(),
     };
-    this.fits = true;
     this.onThemeChange = () => this.applyTheme();
     window.addEventListener("rwc-themechange", this.onThemeChange);
 
@@ -74,7 +76,16 @@ export class Viewer {
 
     this.volume = new THREE.Group();
     this.scene.add(this.volume);
-    this.mesh = null;
+
+    this.objects = new Map(); // object id -> { mesh, key, fits }
+    this.geometries = new Map(); // file key -> BufferGeometry, shared by the copies of a model
+    this.selectedId = null;
+    this.onSelect = null; // Called with the id of the model tapped in the view.
+    this.selectionBox = new THREE.Box3Helper(new THREE.Box3(), 0xffffff);
+    this.selectionBox.material = this.materials.selection;
+    this.selectionBox.visible = false;
+    this.scene.add(this.selectionBox);
+    this.listenForTaps();
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(container);
@@ -91,7 +102,8 @@ export class Viewer {
     this.materials.disallowed.color.setHex(palette.disallowed);
     this.materials.disallowed.opacity = palette.disallowedOpacity;
     this.materials.marker.color.setHex(palette.marker);
-    if (this.mesh) this.mesh.material.color.setHex(this.fits ? palette.model : palette.modelBad);
+    this.materials.selection.color.setHex(palette.selection);
+    for (const entry of this.objects.values()) entry.mesh.material.color.setHex(entry.fits ? palette.model : palette.modelBad);
     this.render();
   }
 
@@ -140,33 +152,110 @@ export class Viewer {
     this.resetCamera();
   }
 
-  setMesh(buffer) {
+  hasGeometry(key) {
+    return this.geometries.has(key);
+  }
+
+  addGeometry(key, buffer) {
+    if (this.geometries.has(key)) return;
     const { positions } = decodeMesh(buffer);
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     geometry.computeVertexNormals();
-    if (this.mesh) {
-      this.scene.remove(this.mesh);
-      this.mesh.geometry.dispose();
-      this.mesh.material.dispose();
+    this.geometries.set(key, geometry);
+  }
+
+  // objects: [{ id, key, matrix, fits }]. Models are added (once their geometry is there), moved,
+  // recoloured or removed to match the list.
+  setObjects(objects) {
+    const ids = new Set(objects.map((item) => item.id));
+    for (const [id, entry] of this.objects) {
+      if (!ids.has(id)) {
+        this.scene.remove(entry.mesh);
+        entry.mesh.material.dispose();
+        this.objects.delete(id);
+      }
     }
-    this.fits = true;
-    this.mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
-      color: currentPalette().model, roughness: 0.55, metalness: 0.05, side: THREE.DoubleSide,
-    }));
-    this.mesh.matrixAutoUpdate = false;
-    this.scene.add(this.mesh);
+    for (const item of objects) {
+      let entry = this.objects.get(item.id);
+      if (!entry) {
+        const geometry = this.geometries.get(item.key);
+        if (!geometry) continue;
+        const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+          roughness: 0.55, metalness: 0.05, side: THREE.DoubleSide,
+        }));
+        mesh.matrixAutoUpdate = false;
+        mesh.userData.id = item.id;
+        this.scene.add(mesh);
+        entry = { mesh, key: item.key, fits: true };
+        this.objects.set(item.id, entry);
+      }
+      this.placeEntry(entry, item.matrix, item.fits);
+    }
+    const used = new Set([...this.objects.values()].map((entry) => entry.key));
+    for (const [key, geometry] of this.geometries) {
+      if (!used.has(key) && !objects.some((item) => item.key === key)) {
+        geometry.dispose();
+        this.geometries.delete(key);
+      }
+    }
+    this.updateSelection();
+  }
+
+  // Immediate feedback while Cura works out the real placement.
+  setObjectMatrix(id, matrixList) {
+    const entry = this.objects.get(id);
+    if (!entry) return;
+    this.placeEntry(entry, matrixList, entry.fits);
+    this.updateSelection();
+  }
+
+  placeEntry(entry, matrixList, fits) {
+    entry.mesh.matrix.copy(toMatrix4(matrixList));
+    entry.mesh.matrixWorldNeedsUpdate = true;
+    entry.fits = fits !== false;
+    const palette = currentPalette();
+    entry.mesh.material.color.setHex(entry.fits ? palette.model : palette.modelBad);
+  }
+
+  // The selected model gets an outline, but only when there is more than one.
+  setSelected(id) {
+    this.selectedId = id;
+    this.updateSelection();
+  }
+
+  updateSelection() {
+    const entry = this.objects.get(this.selectedId);
+    this.selectionBox.visible = !!entry && this.objects.size > 1;
+    if (this.selectionBox.visible) {
+      entry.mesh.updateMatrixWorld(true);
+      this.selectionBox.box.setFromObject(entry.mesh);
+    }
     this.render();
   }
 
-  setPlacement(matrixList, fits) {
-    if (!this.mesh) return;
-    this.mesh.matrix.copy(toMatrix4(matrixList));
-    this.mesh.matrixWorldNeedsUpdate = true;
-    this.fits = fits !== false;
-    const palette = currentPalette();
-    this.mesh.material.color.setHex(this.fits ? palette.model : palette.modelBad);
-    this.render();
+  // A tap (not a drag of the camera) on a model selects it.
+  listenForTaps() {
+    const canvas = this.renderer.domElement;
+    let down = null;
+    canvas.addEventListener("pointerdown", (event) => { down = { x: event.clientX, y: event.clientY }; });
+    canvas.addEventListener("pointerup", (event) => {
+      if (!down || Math.hypot(event.clientX - down.x, event.clientY - down.y) > 8) return;
+      down = null;
+      const id = this.pick(event);
+      if (id && this.onSelect) this.onSelect(id);
+    });
+  }
+
+  pick(event) {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const pointer = new THREE.Vector2(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(pointer, this.camera);
+    this.scene.updateMatrixWorld();
+    const [hit] = raycaster.intersectObjects([...this.objects.values()].map((entry) => entry.mesh), false);
+    return hit ? hit.object.userData.id : null;
   }
 
   resetCamera() {
@@ -208,10 +297,8 @@ export class Viewer {
     window.removeEventListener("rwc-themechange", this.onThemeChange);
     this.resizeObserver.disconnect();
     this.controls.dispose();
-    if (this.mesh) {
-      this.mesh.geometry.dispose();
-      this.mesh.material.dispose();
-    }
+    for (const entry of this.objects.values()) entry.mesh.material.dispose();
+    for (const geometry of this.geometries.values()) geometry.dispose();
     for (const material of Object.values(this.materials)) material.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
@@ -226,6 +313,11 @@ export function rotationList(axis, degrees) {
   // Exact values for multiples of 90 degrees (no 6.1e-17 noise sent to the API).
   const list = fromMatrix4(matrix).map((v) => Math.round(v * 1e12) / 1e12);
   return list.map((v) => (Object.is(v, -0) ? 0 : v));
+}
+
+// Translation as a row-major list.
+export function translationList(x, y, z) {
+  return [1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, z, 0, 0, 0, 1];
 }
 
 // left * right, both row-major lists.
