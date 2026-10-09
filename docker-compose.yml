@@ -26,3 +26,5 @@ services:
     volumes:
       - ${CURA_DATA_DIR:-./cura-data}/config:/home/cura/.config/cura
       - ${CURA_DATA_DIR:-./cura-data}/data:/home/cura/.local/share/cura
+      # Marketplace packages wait here until Cura restarts: without it they are lost if the container is recreated.
+      - ${CURA_DATA_DIR:-./cura-data}/cache:/home/cura/.cache/cura
