@@ -7,8 +7,8 @@ DATA_DIR=/home/cura/.local/share/cura/$CURA_SERIES
 
 if [ "$(id -u)" = "0" ]; then
     # Volumes mounted from the host may belong to another user: give them to "cura" and drop root.
-    mkdir -p "$CONFIG_DIR" "$DATA_DIR/plugins"
-    chown -R cura:cura /home/cura/.config/cura /home/cura/.local/share/cura
+    mkdir -p "$CONFIG_DIR" "$DATA_DIR/plugins" /home/cura/.cache/cura
+    chown -R cura:cura /home/cura/.config/cura /home/cura/.local/share/cura /home/cura/.cache/cura
     if [ -n "${CURA_KEEP_VENDORS:-}" ]; then
         prune_resources.sh "$CURA_KEEP_VENDORS" "$DATA_DIR" || echo "[RemoteWebControl] Resource pruning failed; continuing." >&2
     fi

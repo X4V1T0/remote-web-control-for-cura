@@ -126,7 +126,8 @@ docker compose ps             # "healthy" once Cura answers
 ### Maintenance
 
 - **Updating the plugin or the image**: `docker compose up -d --build`. The plugin always comes from the image.
-- **Data**: `cura-data/config` and `cura-data/data` are the volumes. They hold Cura's configuration, the jobs and the token (`cura-data/data/<series>/RemoteWebControl/token.txt`).
+- **Data**: `cura-data/config`, `cura-data/data` and `cura-data/cache` are the volumes. They hold Cura's configuration, the jobs and the token (`cura-data/data/<series>/RemoteWebControl/token.txt`).
+- **Marketplace plugins** (such as Auto Orientation): install them through noVNC, then restart Cura (`docker compose restart`). Cura only installs them on the next start, from `cura-data/cache`. Alternatively, install them in Cura on your computer before exporting the configuration.
 - **Adding a printer of another brand**: do it through noVNC. If you use `CURA_KEEP_VENDORS`, first add the brand to the list (or empty it) and recreate the container (`docker compose up -d`).
 - **Memory**: ~375 MB on start-up with `CURA_KEEP_VENDORS`, ~475 MB without it. It grows a little after a few slices, because Cura keeps caches. If a printer uses anything outside the list, nothing is pruned and the logs say so.
 - **Healthcheck**: it queries Cura through its main thread, so it also catches a hung Cura. If a dialog is ever left open in Cura, close it through noVNC.
